@@ -1,6 +1,6 @@
 # Dioptase-Pipe-Simple
 
-Pipeline implementation of [Dioptase-Emulator-Simple](https://github.com/b-Rocks2718/Dioptase-Emulator-Simple)
+Pipeline implementation of [Dioptase-Emulator-Full](https://github.com/b-Rocks2718/Dioptase-Emulator-Full)
 
 6 stage pipeline
 
@@ -21,3 +21,5 @@ Run it on a hex file with `./sim.vvp +hex=<file.hex>`
 Run the tests with `make all`.
 
 The test suite consists of all tests used for verifying the emulator, in addition pipeline-specific tests to ensure forwarding, stalls, and misaligned memory accesses are handled correctly.
+
+I'd like to set up verilator and use it to simulate the VGA output
