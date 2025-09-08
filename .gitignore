@@ -1,0 +1,6 @@
+*.out
+*.emuout
+*.vout
+*.hex
+*.vcd
+*.vvp
