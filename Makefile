@@ -1,13 +1,13 @@
 # Directories
 CPU_TESTS_DIR    := tests/asm
-EMU_TESTS_DIR    := ../../Dioptase-Emulators/Dioptase-Emulator-Simple/tests/asm
+EMU_TESTS_DIR    := ../../Dioptase-Emulators/Dioptase-Emulator-Full/tests/asm
 SRC_DIR      		 := src
 HEX_DIR					 := tests/hex
 OUT_DIR      		 := tests/out
 
 # Tools
 ASSEMBLER    := ../../Dioptase-Assembler/build/assembler
-EMULATOR     := ../../Dioptase-Emulators/Dioptase-Emulator-Simple/target/release/Dioptase-Emulator-Simple
+EMULATOR     := ../../Dioptase-Emulators/Dioptase-Emulator-Full/target/release/Dioptase-Emulator-Full
 IVERILOG     := iverilog
 VVP          := vvp
 

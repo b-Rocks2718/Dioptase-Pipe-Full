@@ -30,3 +30,23 @@ module regfile(input clk,
   end
 
 endmodule
+
+module cregfile(input clk,
+    input [4:0]raddr0, output reg [31:0]rdata0,
+    input wen0, input [4:0]waddr0, input [31:0]wdata0, 
+    input stall);
+
+  reg [31:0]cregfile[0:5'b111];
+
+  always @(posedge clk) begin
+    if (wen0) begin
+      cregfile[waddr0] <= wdata0;
+    end
+
+    if (!stall) begin
+      rdata0 <= (raddr0 == 0) ? 32'b0 : cregfile[raddr0];
+    end
+
+  end
+
+endmodule

@@ -31,7 +31,10 @@ module pipelined_cpu(
     wire branch;
     wire flush;
     wire mem_halt;
-    assign flush = branch || mem_halt;
+    wire interrupt;
+    assign flush = branch || mem_halt || interrupt;
+    // TODO: update flush to || with interrupt
+    // and have later stages flush on interrupt
 
     reg mem_ren = 1;
     assign mem_read0_addr = fetch_addr;

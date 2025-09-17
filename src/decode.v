@@ -7,16 +7,17 @@ module decode(input clk,
 
     input we1, input [4:0]target_1, input [31:0]write_data_1,
     input we2, input [4:0]target_2, input [31:0]write_data_2,
+    input cwe, input [4:0]ctgt, input [31:0]cwrite_data,
 
-    input stall,
+    input stall, input kmode, input [7:0]exc_in, output reg [7:0]exc_out,
 
-    output [31:0]d_1, output [31:0]d_2, output reg [31:0]pc_out,
+    output [31:0]d_1, output [31:0]d_2, output [31:0]cd, output reg [31:0]pc_out,
     output reg [4:0]opcode_out, output reg [4:0]s_1_out, output reg [4:0]s_2_out, 
-    output reg [4:0]tgt_out_1, output reg [4:0]tgt_out_2,
+    output reg [4:0]tgt_out_1, output reg [4:0]tgt_out_2, output reg [4:0]tgt_cr_out,
     output reg [4:0]alu_op_out, output reg [31:0]imm_out, output reg [4:0]branch_code_out,
-    output reg bubble_out, output reg halt_out, output [31:0]ret_val,
+    output reg bubble_out, output [31:0]ret_val,
     output reg is_load_out, output reg is_store_out, output reg is_branch_out,
-    output reg is_post_inc_out
+    output reg is_post_inc_out, output reg [1:0]crmov_mode_type_out
   );
 
   reg was_stall;
@@ -51,9 +52,34 @@ module decode(input clk,
 
   wire is_mem = (5'd3 <= opcode && opcode <= 5'd11);
   wire is_branch = (5'd12 <= opcode && opcode <= 5'd14);
+  wire is_alu = (opcode == 5'd0 || opcode == 5'd1);
 
   wire is_load = is_mem && load_bit;
   wire is_store = is_mem && !load_bit;
+
+  wire is_syscall = (opcode == 5'd15);
+
+  wire is_priv = (opcode == 5'd31);
+  wire [4:0]priv_type = instr_in[16:12]; // type of privileged instruction
+
+  wire [7:0]exc_code = instr_in[7:0];
+
+  wire [1:0]crmov_mode_type = instr_in[11:10];
+
+  wire invalid_instr = 
+    (5'd16 <= opcode && opcode <= 5'd30) || // bad opcode
+    (is_alu && (alu_op > 5'd18)) || // bad alu op
+    (is_branch && (branch_code > 5'd18)) || // bad branch code
+    (is_syscall && (exc_code != 8'd1)) || // bad syscall
+    (is_priv && (priv_type > 5'd3)); // bad privileged instruction
+
+  wire invalid_priv = is_priv && !kmode;
+
+  wire [7:0]exc_priv_instr = 
+    invalid_instr ? 8'h80 :
+    invalid_priv ? 8'h81 : 
+    is_syscall ? exc_code :
+    0;
 
   // 0 => offset, 1 => preincrement, 2 => postincrement
   wire [1:0]increment_type = instr_in[15:14];
@@ -79,6 +105,14 @@ module decode(input clk,
         we2, target_2, write_data_2,
         stall, ret_val);
 
+  wire [4:0]cs = r_b;
+
+  cregfile cregfile(clk,
+        cs, cd,
+        cwe, ctgt, cwrite_data,
+        stall
+  );
+
   wire [31:0]imm = 
     (opcode == 5'd1 && is_bitwise) ? { 24'b0, instr_in[7:0] } << alu_shift : // zero extend, then shift
     (opcode == 5'd1 && is_shift) ? { 27'b0, instr_in[4:0] } : // zero extend 5 bit
@@ -94,6 +128,7 @@ module decode(input clk,
     bubble_out = 1;
     tgt_out_1 = 5'b00000;
     tgt_out_2 = 5'b00000;
+    tgt_cr_out = 5'b00000;
   end
 
   always @(posedge clk) begin
@@ -104,6 +139,7 @@ module decode(input clk,
         s_2_out <= s_2;
 
         tgt_out_1 <= (flush || bubble_in || is_store) ? 5'b0 : r_a;
+        tgt_cr_out <= ra;
         tgt_out_2 <= (flush || bubble_in || !is_absolute_mem || increment_type == 5'd0) ? 5'b0 : r_b;
 
         imm_out <= imm;
@@ -111,12 +147,14 @@ module decode(input clk,
         alu_op_out <= alu_op;
         bubble_out <= flush ? 1 : bubble_in;
         pc_out <= pc_in;
-        halt_out <= (opcode == 5'b01111) && (instr_in[6:0] == 7'b0) && !bubble_in;
-
+      
         is_load_out <= is_load;
         is_store_out <= is_store;
         is_branch_out <= is_branch;
         is_post_inc_out <= is_absolute_mem && increment_type == 2;
+        crmov_mode_type_out <= crmov_mode_type;
+
+        exc_out <= (exc_in != 0) ? exc_in : exc_priv_instr;
       end
 
       // lol experimental programming W
