@@ -9,7 +9,14 @@ module decode(input clk,
     input we2, input [4:0]target_2, input [31:0]write_data_2,
     input cwe, input [4:0]ctgt, input [31:0]cwrite_data,
 
-    input stall, input kmode, input [7:0]exc_in, output reg [7:0]exc_out,
+    input stall, input [7:0]exc_in, 
+    
+    input [31:0]epc, input [31:0]efg, input [31:0]tlb_addr,
+    input exc_in_wb, input tlb_exc_in_wb,
+    input [15:0]interrupts,
+    
+    output [31:0]cdv, output kmode, 
+    output reg [7:0]exc_out,
 
     output [31:0]d_1, output [31:0]d_2, output [31:0]cd, output reg [31:0]pc_out,
     output reg [4:0]opcode_out, output reg [4:0]s_1_out, output reg [4:0]s_2_out, 
@@ -17,7 +24,8 @@ module decode(input clk,
     output reg [4:0]alu_op_out, output reg [31:0]imm_out, output reg [4:0]branch_code_out,
     output reg bubble_out, output [31:0]ret_val,
     output reg is_load_out, output reg is_store_out, output reg is_branch_out,
-    output reg is_post_inc_out, output reg [1:0]crmov_mode_type_out
+    output reg is_post_inc_out, output reg [4:0]priv_type_out,
+    output reg [1:0]crmov_mode_type_out 
   );
 
   reg was_stall;
@@ -107,10 +115,14 @@ module decode(input clk,
 
   wire [4:0]cs = r_b;
 
+  wire [31:0]interrupt_state;
+
   cregfile cregfile(clk,
         cs, cd,
         cwe, ctgt, cwrite_data,
-        stall
+        stall, exc_in_wb, tlb_exc_in_wb,
+        tlb_addr, epc, efg, interrupts,
+        kmode, cdv, interrupt_state
   );
 
   wire [31:0]imm = 
@@ -139,7 +151,7 @@ module decode(input clk,
         s_2_out <= s_2;
 
         tgt_out_1 <= (flush || bubble_in || is_store) ? 5'b0 : r_a;
-        tgt_cr_out <= ra;
+        tgt_cr_out <= r_a;
         tgt_out_2 <= (flush || bubble_in || !is_absolute_mem || increment_type == 5'd0) ? 5'b0 : r_b;
 
         imm_out <= imm;
@@ -153,8 +165,28 @@ module decode(input clk,
         is_branch_out <= is_branch;
         is_post_inc_out <= is_absolute_mem && increment_type == 2;
         crmov_mode_type_out <= crmov_mode_type;
+        priv_type_out <= priv_type;
 
-        exc_out <= (exc_in != 0) ? exc_in : exc_priv_instr;
+        exc_out <= (interrupt_state != 0) ? (
+          interrupt_state[15] ? 8'hFF :
+          interrupt_state[14] ? 8'hFE :
+          interrupt_state[13] ? 8'hFD :
+          interrupt_state[12] ? 8'hFC :
+          interrupt_state[11] ? 8'hFB :
+          interrupt_state[10] ? 8'hFA :
+          interrupt_state[9] ? 8'hF9 :
+          interrupt_state[8] ? 8'hF8 :
+          interrupt_state[7] ? 8'hF7 :
+          interrupt_state[6] ? 8'hF6 :
+          interrupt_state[5] ? 8'hF5 :
+          interrupt_state[4] ? 8'hF4 :
+          interrupt_state[3] ? 8'hF3 :
+          interrupt_state[2] ? 8'hF2 :
+          interrupt_state[1] ? 8'hF1 :
+          interrupt_state[0] ? 8'hF0 :
+          8'h0
+          ) 
+          : (exc_in != 0) ? exc_in : exc_priv_instr;
       end
 
       // lol experimental programming W

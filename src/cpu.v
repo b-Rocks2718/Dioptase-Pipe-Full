@@ -9,6 +9,7 @@ module pipelined_cpu(
 );
 
     reg halt = 0;
+    reg sleep = 0;
 
     counter ctr(halt, clk, ret_val);
 

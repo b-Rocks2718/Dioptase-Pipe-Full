@@ -33,10 +33,29 @@ endmodule
 
 module cregfile(input clk,
     input [4:0]raddr0, output reg [31:0]rdata0,
-    input wen0, input [4:0]waddr0, input [31:0]wdata0, 
-    input stall);
+    input wen0, input [4:0]waddr0, input [31:0]wdata0,
+    input stall, input exc, input tlb_exc, input [31:0]tlb_addr,
+    input [31:0]epc, input [31:0]efg, input [15:0]interrupts,
+    output kmode, output [31:0]cdv_out, output [31:0]interrupt_state);
 
   reg [31:0]cregfile[0:5'b111];
+
+  initial begin
+    cregfile[0] <= 1;
+    cregfile[1] <= 0;
+    cregfile[2] <= 0;
+    cregfile[3] <= 0;
+    cregfile[4] <= 0;
+    cregfile[5] <= 0;
+    cregfile[6] <= 0;
+    cregfile[7] <= 0;
+  end
+
+  assign cdv_out = cregfile[6];
+  assign kmode = (cregfile[0] != 31'd0);
+
+  assign interrupt_state = cregfile[3][31] ?
+    (cregfile[2] & cregfile[3]) : 32'd0;
 
   always @(posedge clk) begin
     if (wen0) begin
@@ -44,7 +63,19 @@ module cregfile(input clk,
     end
 
     if (!stall) begin
-      rdata0 <= (raddr0 == 0) ? 32'b0 : cregfile[raddr0];
+      if (!exc) begin
+        rdata0 <= (raddr0 == 0) ? 32'b0 : cregfile[raddr0];
+      end else begin
+        if (tlb_exc) begin
+          cregfile[7] <= tlb_addr;
+        end
+        cregfile[4] <= epc;
+        cregfile[5] <= efg;
+      end
+
+      // interrupt reg
+      cregfile[2] <= cregfile[2] | {16'b0, interrupts};
+
     end
 
   end
