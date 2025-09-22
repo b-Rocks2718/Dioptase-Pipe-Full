@@ -14,6 +14,8 @@ module decode(input clk,
     input [31:0]epc, input [31:0]efg, input [31:0]tlb_addr,
     input exc_in_wb, input tlb_exc_in_wb,
     input [15:0]interrupts,
+
+    input interrupt_in_wb, input rfe_in_wb, input rfi_in_wb,
     
     output [31:0]cdv, output kmode, 
     output reg [7:0]exc_out,
@@ -122,6 +124,7 @@ module decode(input clk,
         cwe, ctgt, cwrite_data,
         stall, exc_in_wb, tlb_exc_in_wb,
         tlb_addr, epc, efg, interrupts,
+        interrupt_in_wb, rfe_in_wb, rfi_in_wb,
         kmode, cdv, interrupt_state
   );
 
