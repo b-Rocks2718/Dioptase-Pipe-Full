@@ -10,22 +10,16 @@ module tlb(input clk,
 
   // 32 bits (key) + 6 (value) = 38 bits
 
+  // TODO: kmode bottom addresses
+
   reg [37:0]cache[0:3'h7];
   reg [2:0]eviction_tgt;
 
   wire [31:0]key0 = {pid, addr0[31:12]};
   wire [31:0]key1 = {pid, addr1[31:12]};
 
-  wire [3:0]addr0_index = 
-    (key0 == cache[0][37:6]) ? 4'h0 :
-    (key0 == cache[1][37:6]) ? 4'h1 :
-    (key0 == cache[2][37:6]) ? 4'h2 :
-    (key0 == cache[3][37:6]) ? 4'h3 :
-    (key0 == cache[4][37:6]) ? 4'h4 :
-    (key0 == cache[5][37:6]) ? 4'h5 :
-    (key0 == cache[6][37:6]) ? 4'h6 :
-    (key0 == cache[7][37:6]) ? 4'h7 :
-    4'hf;
+  wire is_bottom_addr0 = addr0 < 18'h30000;
+  wire is_bottom_addr1 = addr1 < 18'h30000;
 
   assign exc_out0 = (addr0_index == 4'hf) ? 
     // tlb miss exception
@@ -41,7 +35,20 @@ module tlb(input clk,
               8'h82   // umiss
     ) : 8'd0);
 
-  assign addr0_out = 
+  wire is_exc = exc_out1 != 8'd0;
+
+  wire [3:0]addr0_index = 
+    (key0 == cache[0][37:6]) ? 4'h0 :
+    (key0 == cache[1][37:6]) ? 4'h1 :
+    (key0 == cache[2][37:6]) ? 4'h2 :
+    (key0 == cache[3][37:6]) ? 4'h3 :
+    (key0 == cache[4][37:6]) ? 4'h4 :
+    (key0 == cache[5][37:6]) ? 4'h5 :
+    (key0 == cache[6][37:6]) ? 4'h6 :
+    (key0 == cache[7][37:6]) ? 4'h7 :
+    4'hf;
+
+  assign addr0_out = (is_bottom_addr0 && kmode) ? addr0[17:0] :
     {((addr0_index == 4'd0) ? cache[0][5:0] :
     (addr0_index == 4'd1) ? cache[1][5:0] :
     (addr0_index == 4'd2) ? cache[2][5:0] :
@@ -63,7 +70,8 @@ module tlb(input clk,
     (key1 == cache[7][37:6]) ? 4'h7 :
     4'hf;
 
-  assign addr1_out = 
+  assign addr1_out = (is_bottom_addr1 && kmode) ? addr0[17:0] : (
+    is_exc ? {8'b0, exc_out1, 2'b0} : 
     {((addr1_index == 4'd0) ? cache[0][5:0] :
     (addr1_index == 4'd1) ? cache[1][5:0] :
     (addr1_index == 4'd2) ? cache[2][5:0] :
@@ -72,7 +80,7 @@ module tlb(input clk,
     (addr1_index == 4'd5) ? cache[5][5:0] :
     (addr1_index == 4'd6) ? cache[6][5:0] :
     (addr1_index == 4'd7) ? cache[7][5:0] :
-    6'd0), addr1[11:0]};
+    6'd0), addr1[11:0]});
 
   wire [3:0]addr2_index = 
     (read_addr == cache[0][37:6]) ? 4'h0 :
