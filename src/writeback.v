@@ -17,7 +17,7 @@ module writeback(input clk, input halt, input bubble_in,
     output we1, output reg [4:0]wb_tgt_out_1, output reg [31:0]wb_result_out_1,
     output we2, output reg [4:0]wb_tgt_out_2, output reg [31:0]wb_result_out_2,
     output exc_in_wb, output interrupt_in_wb, output rfe_in_wb, output rfi_in_wb,
-    output halt, output sleep
+    output halt_out, output sleep_out
   );
 
   initial begin
@@ -33,8 +33,9 @@ module writeback(input clk, input halt, input bubble_in,
   assign interrupt_in_wb = (exc_in[7:4] == 4'hf);
   assign rfe_in_wb = opcode == 5'd31 && priv_type == 5'd3;
   assign rfi_in_wb = rfe_in_wb && crmov_mode_type[1] == 1'b1;
-  // TODO: halt and sleep bits
-  //assign halt = ;
+  
+  assign halt_out = (opcode == 5'd31) && (priv_type == 5'd2) && (crmov_mode_type == 2'd2);
+  assign sleep_out = (opcode == 5'd31) && (priv_type == 5'd2) && (crmov_mode_type == 2'd1);
 
   always @(posedge clk) begin
     if (~halt) begin
@@ -70,10 +71,10 @@ module writeback(input clk, input halt, input bubble_in,
     (5'd6 <= opcode && opcode <= 5'd8) ? ((mem_result & 32'hff) << 8) | ((mem_result_buf & 32'hff000000) >> 24) :
     32'h1;
 
-  // TODO: update we to handle crmov
   // stores and immediate branches don't write to register file, everything else does
-  assign we1 = (tgt_in_1 != 0) && (!is_store && opcode != 5'd12) && !bubble_in;
+  assign we1 = (tgt_in_1 != 0) && (!is_store && opcode != 5'd12) && !bubble_in && !tgts_cr;
   assign we2 = (tgt_in_2 != 0) && (opcode != 5'd12) && !bubble_in;
+  
   assign result_out_1 = is_load ? (was_misaligned ? misaligned_result : masked_mem_result) : alu_result_1;
   assign result_out_2 = alu_result_2;
 

@@ -1,4 +1,4 @@
-# Dioptase-Pipe-Simple
+# Dioptase-Pipe-Full
 
 Pipeline implementation of [Dioptase-Emulator-Full](https://github.com/b-Rocks2718/Dioptase-Emulator-Full)
 

@@ -17,7 +17,7 @@ module decode(input clk,
 
     input interrupt_in_wb, input rfe_in_wb, input rfi_in_wb,
     
-    output [31:0]cdv, output kmode, 
+    output [31:0]cdv, output [11:0]pid, output kmode, 
     output reg [7:0]exc_out,
 
     output [31:0]d_1, output [31:0]d_2, output [31:0]cr_d, output reg [31:0]pc_out,
@@ -28,7 +28,7 @@ module decode(input clk,
     output reg is_load_out, output reg is_store_out, output reg is_branch_out,
     output reg is_post_inc_out, output reg tgts_cr_out,
     output reg [4:0]priv_type_out, output reg [1:0]crmov_mode_type_out,
-    output tlb_we, output tlbc 
+    output reg tlb_we, output reg tlbc 
   );
 
   reg was_stall;
@@ -126,7 +126,7 @@ module decode(input clk,
         stall, exc_in_wb, tlb_exc_in_wb,
         tlb_addr, epc, efg, interrupts,
         interrupt_in_wb, rfe_in_wb, rfi_in_wb,
-        kmode, cdv, interrupt_state
+        kmode, cdv, interrupt_state, pid
   );
 
   wire [31:0]imm = 
@@ -144,7 +144,14 @@ module decode(input clk,
     bubble_out = 1;
     tgt_out_1 = 5'b00000;
     tgt_out_2 = 5'b00000;
+    exc_out <= 8'd0;
   end
+
+  wire priv_instr_tgts_ra = 
+    is_priv && (
+      (priv_type == 5'd0 && crmov_mode_type == 2'd0) || // tblr
+      (priv_type == 5'd1) // cr mov
+    );
 
   always @(posedge clk) begin
     if (~halt) begin
@@ -153,8 +160,7 @@ module decode(input clk,
         s_1_out <= s_1;
         s_2_out <= s_2;
 
-        // TODO: add when priv instructions target ra
-        tgt_out_1 <= (flush || bubble_in || is_store) ? 5'b0 : r_a;
+        tgt_out_1 <= (flush || bubble_in || is_store || priv_instr_tgts_ra) ? 5'b0 : r_a;
         tgt_out_2 <= (flush || bubble_in || !is_absolute_mem || increment_type == 5'd0) ? 5'b0 : r_b;
 
         imm_out <= imm;

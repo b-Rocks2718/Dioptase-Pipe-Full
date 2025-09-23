@@ -30,9 +30,9 @@ module memory(input clk, input halt,
     bubble_out = 1;
     tgt_out_1 = 5'd0;
     tgt_out_2 = 5'd0;
-  end
 
-  // TODO: get exc target here (or maybe in exec stage)
+    exc_out <= 5'd0;
+  end
 
   always @(posedge clk) begin
     if (~halt) begin

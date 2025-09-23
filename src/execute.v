@@ -22,9 +22,10 @@ module execute(input clk, input halt,
     input is_post_inc, input tgts_cr,
     input [4:0]priv_type, input [1:0]crmov_mode_type,
     input [7:0]exc_in, input exc_in_wb, input [31:0]flags_restore, input flags_we,
-    
+    input [31:0]tlb_read,
+
     output reg [31:0]result_1, output reg [31:0]result_2, output reg [31:0]result_cr,
-    output [31:0]addr, output [31:0]store_data, output [3:0]we, output reg [31:0]addr_out,
+    output [31:0]exc_addr, output [31:0]addr, output [31:0]store_data, output [3:0]we, output reg [31:0]addr_out,
     output reg [4:0]opcode_out, 
     output reg [4:0]tgt_out_1, output reg [4:0]tgt_out_2, output reg [4:0]tgt_out_cr,
     
@@ -50,6 +51,8 @@ module execute(input clk, input halt,
     reg_tgt_buf_b_2 = 5'd0;
     tgts_cr_buf_a = 0;
     tgts_cr_buf_b = 0;
+
+    exc_out <= 5'd0;
   end
 
   reg [4:0]reg_tgt_buf_a_1;
@@ -97,11 +100,11 @@ module execute(input clk, input halt,
     reg_out_2;
 
   assign cr_op = 
-    (tgt_out_cr == cr_s && tgts_cr_out) ? result_1 :
-    (mem_tgt_cr == cr_s && mem_tgts_cr) ? mem_result_out_1 : 
-    (wb_tgt_cr == cr_s && wb_tgts_cr) ? wb_result_out_1 :
-    (reg_tgt_buf_a_cr == cr_s && tgts_cr_buf_a) ? reg_data_buf_a_1 :
-    (reg_tgt_buf_b_cr == cr_s && tgts_cr_buf_b) ? reg_data_buf_b_1 :
+    (tgt_out_1 == cr_s && tgts_cr_out) ? result_1 :
+    (mem_tgt_1 == cr_s && mem_tgts_cr) ? mem_result_out_1 : 
+    (wb_tgt_1 == cr_s && wb_tgts_cr) ? wb_result_out_1 :
+    (reg_tgt_buf_a_1 == cr_s && tgts_cr_buf_a) ? reg_data_buf_a_1 :
+    (reg_tgt_buf_b_1 == cr_s && tgts_cr_buf_b) ? reg_data_buf_b_1 :
     reg_out_cr;
 
   reg [31:0]addr_buf;
@@ -238,9 +241,10 @@ module execute(input clk, input halt,
       result_1 <= (opcode == 5'd13 || opcode == 5'd14) ? decode_pc_out + 32'd4 : 
                   // crmov reading from control reg
                   (opcode == 5'd31 && priv_type == 5'd1 && crmov_mode_type <= 2'd1) ? reg_out_cr :
+                  // tlbr
+                  (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd0) ? tlb_read :
                   // everything else
                   alu_rslt;
-                  // TODO: add case where we use tlb_read
 
       result_2 <= alu_rslt;
       tgt_out_1 <= (exc_in_wb || stall) ? 5'd0 : tgt_1;
@@ -269,17 +273,13 @@ module execute(input clk, input halt,
       if (stall) begin
         reg_tgt_buf_a_1 <= stall ? wb_tgt_1 : 0;
         reg_tgt_buf_a_2 <= stall ? wb_tgt_2 : 0;
-        reg_tgt_buf_a_cr <= stall ? wb_tgt_cr : 0;
         reg_data_buf_a_1 <= wb_result_out_1;
         reg_data_buf_a_2 <= wb_result_out_2;
-        reg_data_buf_a_cr <= wb_result_out_cr;
         tgts_cr_buf_a <= wb_tgts_cr;
         reg_tgt_buf_b_1 <= stall ? reg_tgt_buf_a_1 : 0;
         reg_tgt_buf_b_2 <= stall ? reg_tgt_buf_a_2 : 0;
-        reg_tgt_buf_b_cr <= stall ? reg_tgt_buf_a_cr : 0;
         reg_data_buf_b_1 <= reg_data_buf_a_1;
         reg_data_buf_b_2 <= reg_data_buf_a_2;
-        reg_data_buf_b_cr <= reg_data_buf_a_cr;
         tgts_cr_buf_b <= tgts_cr_buf_a;
       end
     end
