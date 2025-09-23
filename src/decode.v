@@ -7,7 +7,7 @@ module decode(input clk,
 
     input we1, input [4:0]target_1, input [31:0]write_data_1,
     input we2, input [4:0]target_2, input [31:0]write_data_2,
-    input cwe, input [4:0]ctgt, input [31:0]cwrite_data,
+    input cr_we,
 
     input stall, input [7:0]exc_in, 
     
@@ -20,14 +20,15 @@ module decode(input clk,
     output [31:0]cdv, output kmode, 
     output reg [7:0]exc_out,
 
-    output [31:0]d_1, output [31:0]d_2, output [31:0]cd, output reg [31:0]pc_out,
+    output [31:0]d_1, output [31:0]d_2, output [31:0]cr_d, output reg [31:0]pc_out,
     output reg [4:0]opcode_out, output reg [4:0]s_1_out, output reg [4:0]s_2_out, 
-    output reg [4:0]tgt_out_1, output reg [4:0]tgt_out_2, output reg [4:0]tgt_cr_out,
+    output reg [4:0]tgt_out_1, output reg [4:0]tgt_out_2,
     output reg [4:0]alu_op_out, output reg [31:0]imm_out, output reg [4:0]branch_code_out,
     output reg bubble_out, output [31:0]ret_val,
     output reg is_load_out, output reg is_store_out, output reg is_branch_out,
-    output reg is_post_inc_out, output reg [4:0]priv_type_out,
-    output reg [1:0]crmov_mode_type_out 
+    output reg is_post_inc_out, output reg tgts_cr_out,
+    output reg [4:0]priv_type_out, output reg [1:0]crmov_mode_type_out,
+    output tlb_we, output tlbc 
   );
 
   reg was_stall;
@@ -72,6 +73,8 @@ module decode(input clk,
   wire is_priv = (opcode == 5'd31);
   wire [4:0]priv_type = instr_in[16:12]; // type of privileged instruction
 
+  wire tgts_cr = is_priv && (priv_type == 5'd1) && ((crmov_mode_type == 2'd0) || (crmov_mode_type == 2'd2));
+
   wire [7:0]exc_code = instr_in[7:0];
 
   wire [1:0]crmov_mode_type = instr_in[11:10];
@@ -106,7 +109,7 @@ module decode(input clk,
   
   // store instructions read from r_a instead of writing there
   // only alu-reg instructions use r_c as a source
-  wire [4:0]s_2 = is_store ? r_a : ((opcode == 5'd0) ? r_c : 5'd0);
+  wire [4:0]s_2 = (is_store || is_priv)? r_a : ((opcode == 5'd0) ? r_c : 5'd0);
 
   regfile regfile(clk,
         s_1, d_1,
@@ -115,13 +118,11 @@ module decode(input clk,
         we2, target_2, write_data_2,
         stall, ret_val);
 
-  wire [4:0]cs = r_b;
-
   wire [31:0]interrupt_state;
 
   cregfile cregfile(clk,
-        cs, cd,
-        cwe, ctgt, cwrite_data,
+        r_b, cr_d,
+        cr_we, target_1, write_data_1,
         stall, exc_in_wb, tlb_exc_in_wb,
         tlb_addr, epc, efg, interrupts,
         interrupt_in_wb, rfe_in_wb, rfi_in_wb,
@@ -143,7 +144,6 @@ module decode(input clk,
     bubble_out = 1;
     tgt_out_1 = 5'b00000;
     tgt_out_2 = 5'b00000;
-    tgt_cr_out = 5'b00000;
   end
 
   always @(posedge clk) begin
@@ -153,8 +153,8 @@ module decode(input clk,
         s_1_out <= s_1;
         s_2_out <= s_2;
 
+        // TODO: add when priv instructions target ra
         tgt_out_1 <= (flush || bubble_in || is_store) ? 5'b0 : r_a;
-        tgt_cr_out <= r_a;
         tgt_out_2 <= (flush || bubble_in || !is_absolute_mem || increment_type == 5'd0) ? 5'b0 : r_b;
 
         imm_out <= imm;
@@ -169,6 +169,10 @@ module decode(input clk,
         is_post_inc_out <= is_absolute_mem && increment_type == 2;
         crmov_mode_type_out <= crmov_mode_type;
         priv_type_out <= priv_type;
+        tgts_cr_out <= tgts_cr;
+
+        tlb_we <= (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd1);
+        tlbc   <= (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd2);
 
         exc_out <= (interrupt_state != 0) ? (
           interrupt_state[15] ? 8'hFF :

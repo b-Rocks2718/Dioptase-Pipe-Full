@@ -3,26 +3,36 @@
 module memory(input clk, input halt,
     input bubble_in,
     input [4:0]opcode_in, input [4:0]tgt_in_1, input [4:0]tgt_in_2, 
-    input [31:0]result_in_1, input [31:0]result_in_2, input halt_in,
+    input [31:0]result_in_1, input [31:0]result_in_2,
 
     input [31:0]addr_in,
 
     input is_load, input is_store, input is_misaligned,
+
+    input [31:0]exec_pc_out, input [7:0]exc_in, input [7:0]tlb_exc_in,
+    input tgts_cr, input [4:0]priv_type, input [1:0]crmov_mode_type,
+    input [3:0]flags_in,
+    input [31:0]op1, input [31:0]op2,
     
     output reg [4:0]tgt_out_1, output reg [4:0]tgt_out_2,
     output reg [31:0]result_out_1, output reg [31:0]result_out_2,
     output reg [4:0]opcode_out, output reg [31:0]addr_out,
-    output reg bubble_out, output reg halt_out,
+    output reg bubble_out,
 
-    output reg is_load_out, output reg is_store_out, output reg is_misaligned_out
+    output reg is_load_out, output reg is_store_out, output reg is_misaligned_out,
+    output reg [31:0]mem_pc_out, output reg [7:0]exc_out,
+    output reg tgts_cr_out, output reg [4:0]priv_type_out, output reg [1:0]crmov_mode_type_out,
+    output reg [3:0]flags_out,
+    output reg [31:0]op1_out, output reg [31:0]op2_out
   );
 
   initial begin
     bubble_out = 1;
-    halt_out = 0;
     tgt_out_1 = 5'd0;
     tgt_out_2 = 5'd0;
   end
+
+  // TODO: get exc target here (or maybe in exec stage)
 
   always @(posedge clk) begin
     if (~halt) begin
@@ -31,9 +41,18 @@ module memory(input clk, input halt,
       opcode_out <= opcode_in;
       result_out_1 <= result_in_1;
       result_out_2 <= result_in_2;
-      bubble_out <= halt_out ? 1 : bubble_in;
-      halt_out <= halt_in && !bubble_in;
+      bubble_out <= exc_out ? 1 : bubble_in;
       addr_out <= addr_in;
+
+      mem_pc_out <= exec_pc_out;
+      exc_out <= (exc_in != 8'd0) ? exc_in : tlb_exc_in;
+      tgts_cr_out <= tgts_cr;
+      priv_type_out <= priv_type;
+      crmov_mode_type_out <= crmov_mode_type;
+      flags_out <= flags_in;
+
+      op1_out <= op1;
+      op2_out <= op2;
 
       is_load_out <= is_load;
       is_store_out <= is_store;

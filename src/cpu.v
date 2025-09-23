@@ -8,6 +8,8 @@ module pipelined_cpu(
   output [31:0]ret_val, output [3:0]flags, output [31:0]curr_pc
 );
 
+    // TODO: clock divider
+
     reg halt = 0;
     reg sleep = 0;
 
@@ -32,10 +34,8 @@ module pipelined_cpu(
     wire branch;
     wire flush;
     wire mem_halt;
-    wire interrupt;
-    assign flush = branch || mem_halt || interrupt;
-    // TODO: update flush to || with interrupt
-    // and have later stages flush on interrupt
+    wire exc_in_wb;
+    assign flush = branch || mem_halt || exc_in_wb;
 
     reg mem_ren = 1;
     assign mem_read0_addr = fetch_addr;

@@ -1,35 +1,43 @@
 `timescale 1ps/1ps
 
 module execute(input clk, input halt, 
-    input bubble_in, input halt_in_wb,
-    input [4:0]opcode, input [4:0]s_1, input [4:0]s_2, input [4:0]tgt_1, input [4:0]tgt_2, input [4:0]alu_op,
-    input [31:0]imm, input [4:0]branch_code,
+    input bubble_in,
+    input [4:0]opcode, input [4:0]s_1, input [4:0]s_2, input [4:0]cr_s,
+    input [4:0]tgt_1, input [4:0]tgt_2, input [4:0]tgt_cr, 
+    input [4:0]alu_op, input [31:0]imm, input [4:0]branch_code,
     
-    input [4:0]mem_tgt_1, input [4:0]mem_tgt_2, 
-    input [4:0]wb_tgt_1, input [4:0]wb_tgt_2,
+    input [4:0]mem_tgt_1, input [4:0]mem_tgt_2, input [4:0]mem_tgt_cr, 
+    input [4:0]wb_tgt_1, input [4:0]wb_tgt_2, input [4:0]wb_tgt_cr,
     
-    input [31:0]reg_out_1, input [31:0]reg_out_2,
+    input [31:0]reg_out_1, input [31:0]reg_out_2, input [31:0]reg_out_cr,
 
     input [31:0]mem_result_out_1, input [31:0]mem_result_out_2,
-    input [31:0]wb_result_out_1, input [31:0]wb_result_out_2, 
+    input [31:0]wb_result_out_1, input [31:0]wb_result_out_2,
+    input mem_tgts_cr, input wb_tgts_cr,
     
-    input [31:0]decode_pc_out, input halt_in,
+    input [31:0]decode_pc_out,
     input [4:0]mem_opcode_out,
 
     input is_load, input is_store, input is_branch, input mem_bubble, input is_load_mem,
-    input is_post_inc,
+    input is_post_inc, input tgts_cr,
+    input [4:0]priv_type, input [1:0]crmov_mode_type,
+    input [7:0]exc_in, input exc_in_wb, input [31:0]flags_restore, input flags_we,
     
-    output reg [31:0]result_1, output reg [31:0]result_2,
+    output reg [31:0]result_1, output reg [31:0]result_2, output reg [31:0]result_cr,
     output [31:0]addr, output [31:0]store_data, output [3:0]we, output reg [31:0]addr_out,
-    output reg [4:0]opcode_out, output reg [4:0]tgt_out_1, output reg [4:0]tgt_out_2,
+    output reg [4:0]opcode_out, 
+    output reg [4:0]tgt_out_1, output reg [4:0]tgt_out_2, output reg [4:0]tgt_out_cr,
     
     output reg bubble_out,
-    output branch, output [31:0]branch_tgt, output reg halt_out,
+    output branch, output [31:0]branch_tgt,
     output [3:0]flags,
 
     output stall, 
 
-    output reg is_load_out, output reg is_store_out, output reg was_misaligned
+    output reg is_load_out, output reg is_store_out, output reg was_misaligned,
+    output reg tgts_cr_out, output reg [4:0]priv_type_out, output reg [1:0]crmov_mode_type_out,
+    output reg [7:0]exc_out, output reg [31:0]pc_out,
+    output reg [31:0]op1_out, output reg [31:0]op2_out
   );
 
   initial begin
@@ -40,6 +48,8 @@ module execute(input clk, input halt,
     reg_tgt_buf_a_2 = 5'd0;
     reg_tgt_buf_b_1 = 5'd0;
     reg_tgt_buf_b_2 = 5'd0;
+    tgts_cr_buf_a = 0;
+    tgts_cr_buf_b = 0;
   end
 
   reg [4:0]reg_tgt_buf_a_1;
@@ -50,6 +60,8 @@ module execute(input clk, input halt,
   reg [31:0]reg_data_buf_a_2;
   reg [31:0]reg_data_buf_b_1;
   reg [31:0]reg_data_buf_b_2;
+  reg tgts_cr_buf_a;
+  reg tgts_cr_buf_b;
 
   wire [31:0]op1;
   wire [31:0]op2;
@@ -83,6 +95,14 @@ module execute(input clk, input halt,
     (reg_tgt_buf_b_1 == s_2 && s_2 != 5'b0) ? reg_data_buf_b_1 :
     (reg_tgt_buf_b_2 == s_2 && s_2 != 5'b0) ? reg_data_buf_b_2 :
     reg_out_2;
+
+  assign cr_op = 
+    (tgt_out_cr == cr_s && tgts_cr_out) ? result_1 :
+    (mem_tgt_cr == cr_s && mem_tgts_cr) ? mem_result_out_1 : 
+    (wb_tgt_cr == cr_s && wb_tgts_cr) ? wb_result_out_1 :
+    (reg_tgt_buf_a_cr == cr_s && tgts_cr_buf_a) ? reg_data_buf_a_1 :
+    (reg_tgt_buf_b_cr == cr_s && tgts_cr_buf_b) ? reg_data_buf_b_1 :
+    reg_out_cr;
 
   reg [31:0]addr_buf;
   reg [31:0]data_buf;
@@ -159,7 +179,7 @@ module execute(input clk, input halt,
     ) :
     32'h0;
 
-  wire we_bit = is_store && !bubble_in && !halt_out && !halt_in_wb && (!stall || is_misaligned);
+  wire we_bit = is_store && !bubble_in && !exc_in_wb && !exc_out && (!stall || is_misaligned);
 
   assign we = 
     is_mem_w ? (
@@ -208,17 +228,25 @@ module execute(input clk, input halt,
     32'h0;
 
   wire [31:0]alu_rslt;
-  ALU ALU(clk, opcode, alu_op, lhs, rhs, bubble_in, alu_rslt, flags);
+  ALU ALU(clk, opcode, alu_op, lhs, rhs, bubble_in, 
+    flags_restore, flags_we,
+    alu_rslt, flags);
 
   always @(posedge clk) begin
     if (~halt) begin
-      result_1 <= (opcode == 5'd13 || opcode == 5'd14) ? decode_pc_out + 32'd4 : alu_rslt;
+                  // jump and link
+      result_1 <= (opcode == 5'd13 || opcode == 5'd14) ? decode_pc_out + 32'd4 : 
+                  // crmov reading from control reg
+                  (opcode == 5'd31 && priv_type == 5'd1 && crmov_mode_type <= 2'd1) ? reg_out_cr :
+                  // everything else
+                  alu_rslt;
+                  // TODO: add case where we use tlb_read
+
       result_2 <= alu_rslt;
-      tgt_out_1 <= (halt_in_wb || stall) ? 5'd0 : tgt_1;
-      tgt_out_2 <= (halt_in_wb || stall) ? 5'd0 : tgt_2;
+      tgt_out_1 <= (exc_in_wb || stall) ? 5'd0 : tgt_1;
+      tgt_out_2 <= (exc_in_wb || stall) ? 5'd0 : tgt_2;
       opcode_out <= opcode;
-      bubble_out <= (halt_in_wb || (stall && !is_misaligned)) ? 1 : bubble_in;
-      halt_out <= halt_in && !bubble_in;
+      bubble_out <= (exc_in_wb || (stall && !is_misaligned)) ? 1 : bubble_in;
 
       addr_out <= addr;
       
@@ -228,16 +256,31 @@ module execute(input clk, input halt,
 
       is_load_out <= is_load;
       is_store_out <= is_store;
+      tgts_cr_out <= tgts_cr;
+      priv_type_out <= priv_type;
+      crmov_mode_type_out <= crmov_mode_type;
+
+      exc_out <= exc_in;
+
+      pc_out <= decode_pc_out;
+      op1_out <= op1;
+      op2_out <= op2;
 
       if (stall) begin
-      reg_tgt_buf_a_1 <= stall ? wb_tgt_1 : 0;
-      reg_tgt_buf_a_2 <= stall ? wb_tgt_2 : 0;
-      reg_data_buf_a_1 <= wb_result_out_1;
-      reg_data_buf_a_2 <= wb_result_out_2;
-      reg_tgt_buf_b_1 <= stall ? reg_tgt_buf_a_1 : 0;
-      reg_tgt_buf_b_2 <= stall ? reg_tgt_buf_a_2 : 0;
-      reg_data_buf_b_1 <= reg_data_buf_a_1;
-      reg_data_buf_b_2 <= reg_data_buf_a_2;
+        reg_tgt_buf_a_1 <= stall ? wb_tgt_1 : 0;
+        reg_tgt_buf_a_2 <= stall ? wb_tgt_2 : 0;
+        reg_tgt_buf_a_cr <= stall ? wb_tgt_cr : 0;
+        reg_data_buf_a_1 <= wb_result_out_1;
+        reg_data_buf_a_2 <= wb_result_out_2;
+        reg_data_buf_a_cr <= wb_result_out_cr;
+        tgts_cr_buf_a <= wb_tgts_cr;
+        reg_tgt_buf_b_1 <= stall ? reg_tgt_buf_a_1 : 0;
+        reg_tgt_buf_b_2 <= stall ? reg_tgt_buf_a_2 : 0;
+        reg_tgt_buf_b_cr <= stall ? reg_tgt_buf_a_cr : 0;
+        reg_data_buf_b_1 <= reg_data_buf_a_1;
+        reg_data_buf_b_2 <= reg_data_buf_a_2;
+        reg_data_buf_b_cr <= reg_data_buf_a_cr;
+        tgts_cr_buf_b <= tgts_cr_buf_a;
       end
     end
   end
@@ -264,7 +307,7 @@ module execute(input clk, input halt,
                  (branch_code == 5'd18) ? !flags[0] || flags[1] : // bbe
                  0;
 
-  assign branch = !bubble_in && !halt_in_wb && taken && is_branch;
+  assign branch = !bubble_in && !exc_in_wb && taken && is_branch;
   
   assign branch_tgt = 
             (opcode == 5'd12) ? decode_pc_out + imm + 32'h4 :

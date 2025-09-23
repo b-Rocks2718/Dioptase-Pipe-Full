@@ -2,7 +2,7 @@
 
 module ALU(input clk,
     input [4:0]op, input [4:0]alu_op, input [31:0]s_1, input [31:0]s_2, 
-    input bubble,
+    input bubble, input [31:0]flags_restore, input flags_we,
     output [31:0]result, output reg [3:0]flags);
 
   // flags: O | S | Z | C
@@ -96,7 +96,7 @@ module ALU(input clk,
 
   always @(posedge clk) begin
     if (!bubble) begin
-      flags <= {o, s, zero, c};
+      flags <= flags_we ? flags_restore[3:0] : {o, s, zero, c};
     end
   end
 
