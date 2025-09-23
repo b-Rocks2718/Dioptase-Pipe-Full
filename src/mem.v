@@ -6,8 +6,7 @@ module mem(input clk,
     input [3:0]wen, input [31:0]waddr, input [31:0]wdata
 );
 
-    // limited memory address range for now
-    reg [31:0]ram[0:16'hffff];
+    reg [31:0]ram[0:18'h3ffff];
 
     reg [1023:0] hexfile; // buffer for filename
 
@@ -28,16 +27,16 @@ module mem(input clk,
 
       wen_buf <= wen;
 
-      data0_out <= ram[raddr0[15:2]];
-      data1_out <= ram[raddr1[15:2]];
+      data0_out <= ram[raddr0[17:2]];
+      data1_out <= ram[raddr1[17:2]];
 
       rdata0 <= data0_out;
       rdata1 <= data1_out;
 
-      if (wen[0]) ram[waddr[15:2]][7:0]   <= wdata[7:0];
-      if (wen[1]) ram[waddr[15:2]][15:8]  <= wdata[15:8];
-      if (wen[2]) ram[waddr[15:2]][23:16] <= wdata[23:16];
-      if (wen[3]) ram[waddr[15:2]][31:24] <= wdata[31:24];
+      if (wen[0]) ram[waddr[17:2]][7:0]   <= wdata[7:0];
+      if (wen[1]) ram[waddr[17:2]][15:8]  <= wdata[15:8];
+      if (wen[2]) ram[waddr[17:2]][23:16] <= wdata[23:16];
+      if (wen[3]) ram[waddr[17:2]][31:24] <= wdata[31:24];
     end
 
 endmodule
