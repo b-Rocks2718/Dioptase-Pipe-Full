@@ -18,15 +18,17 @@ module dioptase();
     clock c0(clk);
 
     // Memory
-    wire [31:0]mem_read0_addr;
+    wire [17:0]mem_read0_addr;
     wire [31:0]mem_read0_data;
-    wire [31:0]mem_read1_addr;
+    wire [17:0]mem_read1_addr;
     wire [31:0]mem_read1_data;
     wire [3:0]mem_write_en;
-    wire [31:0]mem_write_addr;
+    wire [17:0]mem_write_addr;
     wire [31:0]mem_write_data;
 
-    mem mem(.clk(clk), 
+    wire clk_en;
+
+    mem mem(.clk(clk), .clk_en(clk_en),
         .raddr0(mem_read0_addr), .rdata0(mem_read0_data),
         .raddr1(mem_read1_addr), .rdata1(mem_read1_data),
         .wen(mem_write_en), .waddr(mem_write_addr), .wdata(mem_write_data)
@@ -37,12 +39,14 @@ module dioptase();
     wire [31:0]cpu_pc;
     wire [3:0]flags;
 
+    wire [15:0]interrupts = 0;
+
     pipelined_cpu cpu(
-        clk,
+        clk, interrupts,
         mem_read0_addr, mem_read0_data,
         mem_read1_addr, mem_read1_data,
         mem_write_en, mem_write_addr, mem_write_data,
-        ret_val, flags, cpu_pc
+        ret_val, flags, cpu_pc, clk_en
     );
 
 endmodule

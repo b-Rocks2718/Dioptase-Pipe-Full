@@ -1,13 +1,13 @@
 `timescale 1ps/1ps
 
-module execute(input clk, input halt, 
+module execute(input clk, input clk_en, input halt, 
     input bubble_in,
     input [4:0]opcode, input [4:0]s_1, input [4:0]s_2, input [4:0]cr_s,
-    input [4:0]tgt_1, input [4:0]tgt_2, input [4:0]tgt_cr, 
+    input [4:0]tgt_1, input [4:0]tgt_2, 
     input [4:0]alu_op, input [31:0]imm, input [4:0]branch_code,
     
-    input [4:0]mem_tgt_1, input [4:0]mem_tgt_2, input [4:0]mem_tgt_cr, 
-    input [4:0]wb_tgt_1, input [4:0]wb_tgt_2, input [4:0]wb_tgt_cr,
+    input [4:0]mem_tgt_1, input [4:0]mem_tgt_2,
+    input [4:0]wb_tgt_1, input [4:0]wb_tgt_2,
     
     input [31:0]reg_out_1, input [31:0]reg_out_2, input [31:0]reg_out_cr,
 
@@ -22,16 +22,16 @@ module execute(input clk, input halt,
     input is_post_inc, input tgts_cr,
     input [4:0]priv_type, input [1:0]crmov_mode_type,
     input [7:0]exc_in, input exc_in_wb, input [31:0]flags_restore, input flags_we,
-    input [31:0]tlb_read,
+    input [5:0]tlb_read,
 
-    output reg [31:0]result_1, output reg [31:0]result_2, output reg [31:0]result_cr,
-    output [31:0]exc_addr, output [31:0]addr, output [31:0]store_data, output [3:0]we, output reg [31:0]addr_out,
+    output reg [31:0]result_1, output reg [31:0]result_2,
+    output [31:0]addr, output [31:0]store_data, output [3:0]we, output reg [31:0]addr_out,
     output reg [4:0]opcode_out, 
-    output reg [4:0]tgt_out_1, output reg [4:0]tgt_out_2, output reg [4:0]tgt_out_cr,
+    output reg [4:0]tgt_out_1, output reg [4:0]tgt_out_2,
     
     output reg bubble_out,
     output branch, output [31:0]branch_tgt,
-    output [3:0]flags,
+    output [3:0]flags, output reg [3:0]flags_out,
 
     output stall, 
 
@@ -236,13 +236,13 @@ module execute(input clk, input halt,
     alu_rslt, flags);
 
   always @(posedge clk) begin
-    if (~halt) begin
+    if (~halt && clk_en) begin
                   // jump and link
       result_1 <= (opcode == 5'd13 || opcode == 5'd14) ? decode_pc_out + 32'd4 : 
                   // crmov reading from control reg
                   (opcode == 5'd31 && priv_type == 5'd1 && crmov_mode_type <= 2'd1) ? reg_out_cr :
                   // tlbr
-                  (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd0) ? tlb_read :
+                  (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd0) ? {26'b0, tlb_read} :
                   // everything else
                   alu_rslt;
 
@@ -269,6 +269,8 @@ module execute(input clk, input halt,
       pc_out <= decode_pc_out;
       op1_out <= op1;
       op2_out <= op2;
+
+      flags_out <= flags;
 
       if (stall) begin
         reg_tgt_buf_a_1 <= stall ? wb_tgt_1 : 0;

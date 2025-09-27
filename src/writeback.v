@@ -1,6 +1,6 @@
 `timescale 1ps/1ps
 
-module writeback(input clk, input halt, input bubble_in, 
+module writeback(input clk, input clk_en, input halt, input bubble_in, 
     input [4:0]tgt_in_1, input [4:0]tgt_in_2, 
     input is_load, input is_store, input is_misaligned,
     
@@ -38,7 +38,7 @@ module writeback(input clk, input halt, input bubble_in,
   assign sleep_out = (opcode == 5'd31) && (priv_type == 5'd2) && (crmov_mode_type == 2'd1);
 
   always @(posedge clk) begin
-    if (~halt) begin
+    if (~halt && clk_en) begin
       wb_tgt_out_1 <= tgt_in_1;
       wb_tgt_out_2 <= tgt_in_2;
       wb_result_out_1 <= result_out_1;

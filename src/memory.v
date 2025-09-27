@@ -1,6 +1,6 @@
 `timescale 1ps/1ps
 
-module memory(input clk, input halt,
+module memory(input clk, input clk_en, input halt,
     input bubble_in,
     input [4:0]opcode_in, input [4:0]tgt_in_1, input [4:0]tgt_in_2, 
     input [31:0]result_in_1, input [31:0]result_in_2,
@@ -9,7 +9,7 @@ module memory(input clk, input halt,
 
     input is_load, input is_store, input is_misaligned,
 
-    input [31:0]exec_pc_out, input [7:0]exc_in, input [7:0]tlb_exc_in,
+    input [31:0]exec_pc_out, input [7:0]exc_in,
     input tgts_cr, input [4:0]priv_type, input [1:0]crmov_mode_type,
     input [3:0]flags_in,
     input [31:0]op1, input [31:0]op2,
@@ -35,7 +35,7 @@ module memory(input clk, input halt,
   end
 
   always @(posedge clk) begin
-    if (~halt) begin
+    if (~halt && clk_en) begin
       tgt_out_1 <= tgt_in_1;
       tgt_out_2 <= tgt_in_2;
       opcode_out <= opcode_in;
@@ -45,7 +45,7 @@ module memory(input clk, input halt,
       addr_out <= addr_in;
 
       mem_pc_out <= exec_pc_out;
-      exc_out <= (exc_in != 8'd0) ? exc_in : tlb_exc_in;
+      exc_out <= exc_in;
       tgts_cr_out <= tgts_cr;
       priv_type_out <= priv_type;
       crmov_mode_type_out <= crmov_mode_type;

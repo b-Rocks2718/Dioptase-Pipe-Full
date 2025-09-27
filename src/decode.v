@@ -1,6 +1,6 @@
 `timescale 1ps/1ps
 
-module decode(input clk,
+module decode(input clk, input clk_en,
     input flush, input halt,
 
     input [31:0]mem_out_0, input bubble_in, input [31:0]pc_in,
@@ -22,6 +22,7 @@ module decode(input clk,
 
     output [31:0]d_1, output [31:0]d_2, output [31:0]cr_d, output reg [31:0]pc_out,
     output reg [4:0]opcode_out, output reg [4:0]s_1_out, output reg [4:0]s_2_out, 
+    output reg [4:0]cr_s_out,
     output reg [4:0]tgt_out_1, output reg [4:0]tgt_out_2,
     output reg [4:0]alu_op_out, output reg [31:0]imm_out, output reg [4:0]branch_code_out,
     output reg bubble_out, output [31:0]ret_val,
@@ -109,7 +110,7 @@ module decode(input clk,
   
   // store instructions read from r_a instead of writing there
   // only alu-reg instructions use r_c as a source
-  wire [4:0]s_2 = (is_store || is_priv)? r_a : ((opcode == 5'd0) ? r_c : 5'd0);
+  wire [4:0]s_2 = (is_store || is_priv) ? r_a : ((opcode == 5'd0) ? r_c : 5'd0);
 
   regfile regfile(clk,
         s_1, d_1,
@@ -155,59 +156,62 @@ module decode(input clk,
 
   always @(posedge clk) begin
     if (~halt) begin
-      if (~stall) begin 
-        opcode_out <= opcode;
-        s_1_out <= s_1;
-        s_2_out <= s_2;
+      if (clk_en) begin
+        if (~stall) begin 
+          opcode_out <= opcode;
+          s_1_out <= s_1;
+          s_2_out <= s_2;
+          cr_s_out <= r_b;
 
-        tgt_out_1 <= (flush || bubble_in || is_store || priv_instr_tgts_ra) ? 5'b0 : r_a;
-        tgt_out_2 <= (flush || bubble_in || !is_absolute_mem || increment_type == 5'd0) ? 5'b0 : r_b;
+          tgt_out_1 <= (flush || bubble_in || is_store || priv_instr_tgts_ra) ? 5'b0 : r_a;
+          tgt_out_2 <= (flush || bubble_in || !is_absolute_mem || increment_type == 5'd0) ? 5'b0 : r_b;
 
-        imm_out <= imm;
-        branch_code_out <= branch_code;
-        alu_op_out <= alu_op;
-        bubble_out <= flush ? 1 : bubble_in;
-        pc_out <= pc_in;
+          imm_out <= imm;
+          branch_code_out <= branch_code;
+          alu_op_out <= alu_op;
+          bubble_out <= flush ? 1 : bubble_in;
+          pc_out <= pc_in;
       
-        is_load_out <= is_load;
-        is_store_out <= is_store;
-        is_branch_out <= is_branch;
-        is_post_inc_out <= is_absolute_mem && increment_type == 2;
-        crmov_mode_type_out <= crmov_mode_type;
-        priv_type_out <= priv_type;
-        tgts_cr_out <= tgts_cr;
+          is_load_out <= is_load;
+          is_store_out <= is_store;
+          is_branch_out <= is_branch;
+          is_post_inc_out <= is_absolute_mem && increment_type == 2;
+          crmov_mode_type_out <= crmov_mode_type;
+          priv_type_out <= priv_type;
+          tgts_cr_out <= tgts_cr;
 
-        tlb_we <= (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd1);
-        tlbc   <= (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd2);
+          tlb_we <= (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd1);
+          tlbc   <= (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd2);
 
-        exc_out <= (interrupt_state != 0) ? (
-          interrupt_state[15] ? 8'hFF :
-          interrupt_state[14] ? 8'hFE :
-          interrupt_state[13] ? 8'hFD :
-          interrupt_state[12] ? 8'hFC :
-          interrupt_state[11] ? 8'hFB :
-          interrupt_state[10] ? 8'hFA :
-          interrupt_state[9] ? 8'hF9 :
-          interrupt_state[8] ? 8'hF8 :
-          interrupt_state[7] ? 8'hF7 :
-          interrupt_state[6] ? 8'hF6 :
-          interrupt_state[5] ? 8'hF5 :
-          interrupt_state[4] ? 8'hF4 :
-          interrupt_state[3] ? 8'hF3 :
-          interrupt_state[2] ? 8'hF2 :
-          interrupt_state[1] ? 8'hF1 :
-          interrupt_state[0] ? 8'hF0 :
-          8'h0
-          ) 
-          : (exc_in != 0) ? exc_in : exc_priv_instr;
+          exc_out <= (interrupt_state != 0) ? (
+            interrupt_state[15] ? 8'hFF :
+            interrupt_state[14] ? 8'hFE :
+            interrupt_state[13] ? 8'hFD :
+            interrupt_state[12] ? 8'hFC :
+            interrupt_state[11] ? 8'hFB :
+            interrupt_state[10] ? 8'hFA :
+            interrupt_state[9] ? 8'hF9 :
+            interrupt_state[8] ? 8'hF8 :
+            interrupt_state[7] ? 8'hF7 :
+            interrupt_state[6] ? 8'hF6 :
+            interrupt_state[5] ? 8'hF5 :
+            interrupt_state[4] ? 8'hF4 :
+            interrupt_state[3] ? 8'hF3 :
+            interrupt_state[2] ? 8'hF2 :
+            interrupt_state[1] ? 8'hF1 :
+            interrupt_state[0] ? 8'hF0 :
+            8'h0
+            ) 
+            : (exc_in != 0) ? exc_in : exc_priv_instr;
+        end
+
+        // lol experimental programming W
+        if (!(stall && was_stall)) begin
+          instr_buf <= mem_out_0;
+        end
+        was_stall <= stall;
+        was_was_stall <= was_stall;
       end
-
-      // lol experimental programming W
-      if (!(stall && was_stall)) begin
-        instr_buf <= mem_out_0;
-      end
-      was_stall <= stall;
-      was_was_stall <= was_stall;
     end
   end
 
