@@ -10,7 +10,7 @@ module counter(input isHalt, input clk, input [31:0]ret_val);
             $display("%08h", ret_val);
             $finish;
         end
-        if (count == 500) begin
+        if (count == 20) begin
             $display("ran for 500 cycles");
             $finish;
         end

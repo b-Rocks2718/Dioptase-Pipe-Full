@@ -29,13 +29,13 @@ module writeback(input clk, input clk_en, input halt, input bubble_in,
   reg [31:0]mem_result_buf;
   reg [31:0]addr_buf;
 
-  assign exc_in_wb = (exc_in != 8'd0);
-  assign interrupt_in_wb = (exc_in[7:4] == 4'hf);
-  assign rfe_in_wb = opcode == 5'd31 && priv_type == 5'd3;
-  assign rfi_in_wb = rfe_in_wb && crmov_mode_type[1] == 1'b1;
+  assign exc_in_wb = (exc_in != 8'd0) && !bubble_in;
+  assign interrupt_in_wb = (exc_in[7:4] == 4'hf) && !bubble_in;
+  assign rfe_in_wb = opcode == 5'd31 && priv_type == 5'd3 && !bubble_in && !exc_in_wb;
+  assign rfi_in_wb = rfe_in_wb && crmov_mode_type[1] == 1'b1 && !bubble_in && !exc_in_wb;
   
-  assign halt_out = (opcode == 5'd31) && (priv_type == 5'd2) && (crmov_mode_type == 2'd2);
-  assign sleep_out = (opcode == 5'd31) && (priv_type == 5'd2) && (crmov_mode_type == 2'd1);
+  assign halt_out = (opcode == 5'd31) && (priv_type == 5'd2) && (crmov_mode_type == 2'd2) && !bubble_in && !exc_in_wb;
+  assign sleep_out = (opcode == 5'd31) && (priv_type == 5'd2) && (crmov_mode_type == 2'd1) && !bubble_in && !exc_in_wb;
 
   always @(posedge clk) begin
     if (~halt && clk_en) begin
@@ -72,8 +72,8 @@ module writeback(input clk, input clk_en, input halt, input bubble_in,
     32'h1;
 
   // stores and immediate branches don't write to register file, everything else does
-  assign we1 = (tgt_in_1 != 0) && (!is_store && opcode != 5'd12) && !bubble_in && !tgts_cr;
-  assign we2 = (tgt_in_2 != 0) && (opcode != 5'd12) && !bubble_in;
+  assign we1 = (tgt_in_1 != 0) && (!is_store && opcode != 5'd12) && !bubble_in && !tgts_cr && !exc_in_wb;
+  assign we2 = (tgt_in_2 != 0) && (opcode != 5'd12) && !bubble_in && !exc_in_wb;
   
   assign result_out_1 = is_load ? (was_misaligned ? misaligned_result : masked_mem_result) : alu_result_1;
   assign result_out_2 = alu_result_2;

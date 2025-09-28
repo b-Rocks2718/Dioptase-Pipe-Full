@@ -10,7 +10,11 @@ module pipelined_cpu(
 );
 
     wire [31:0]clock_divider;
-    reg [31:0]clk_count;
+    reg [31:0]clk_count = 32'b0;
+
+    initial begin
+      clk_en <= 1;
+    end
 
     wire [11:0]pid;
     wire [3:0]mem_flags_out;
@@ -39,7 +43,6 @@ module pipelined_cpu(
     wire [31:0]reg_write_data_2;
     wire reg_we_1;
     wire reg_we_2;
-    wire reg_we_cr;
 
     wire branch;
     wire flush;
@@ -124,11 +127,13 @@ module pipelined_cpu(
     wire [4:0]decode_priv_type_out; 
     wire [1:0]decode_crmov_mode_type_out;
 
+    wire mem_tgts_cr_out;
+
     decode decode(clk, clk_en, flush, halt_or_sleep,
       mem_out_0, fetch_b_bubble_out, fetch_b_pc_out,
       reg_we_1, mem_tgt_out_1, reg_write_data_1,
       reg_we_2, mem_tgt_out_2, reg_write_data_2,
-      reg_we_cr,
+      mem_tgts_cr_out,
       stall, fetch_b_exc_out, 
       mem_pc_out, {28'b0, mem_flags_out}, mem_tlbmiss_out,
       exc_in_wb, tlb_exc_in_wb, interrupts,
@@ -164,7 +169,6 @@ module pipelined_cpu(
     
     assign curr_pc = decode_pc_out;
 
-    wire mem_tgts_cr_out;
     wire wb_tgts_cr_out;
 
     wire [31:0]flags_restore;

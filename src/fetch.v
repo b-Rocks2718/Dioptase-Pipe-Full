@@ -32,7 +32,7 @@ module fetch_a(input clk, input clk_en, input stall, input flush,
         pc_out <= fetch_addr;
 
         // misaligned pc exception
-        exc_out <= (fetch_addr[1:0] == 2'b0) ? 8'h84 : 8'h0;
+        exc_out <= (fetch_addr[1:0] != 2'b0) ? 8'h84 : 8'h0;
       end
     end
   end
@@ -56,7 +56,8 @@ module fetch_b(input clk, input clk_en, input stall, input flush, input bubble_i
         if (!stall) begin
           bubble_out <= flush ? 1 : bubble_in;
           pc_out <= pc_in;
-          exc_out <= (exc_in != 8'd0) ? exc_in : exc_tlb;
+          exc_out <= (exc_in != 8'd0) ? exc_in : 
+                      !bubble_in ? exc_tlb : 8'd0;
         end
       end
     end

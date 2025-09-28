@@ -12,7 +12,21 @@ module tlb(input clk, input clk_en,
   // 1 bit (valid) + 32 bits (key) + 6 (value) = 39 bits
 
   reg [38:0]cache[0:3'h7];
-  reg [2:0]eviction_tgt;
+
+  initial begin
+    begin
+      cache[0] <= 39'b0;
+      cache[1] <= 39'b0;
+      cache[2] <= 39'b0;
+      cache[3] <= 39'b0;
+      cache[4] <= 39'b0;
+      cache[5] <= 39'b0;
+      cache[6] <= 39'b0;
+      cache[7] <= 39'b0;
+    end
+  end
+
+  reg [2:0]eviction_tgt = 3'b0;
 
   wire [31:0]key0 = {pid, addr0[31:12]};
   wire [31:0]key1 = {pid, addr1[31:12]};
@@ -20,7 +34,7 @@ module tlb(input clk, input clk_en,
   wire is_bottom_addr0 = addr0 < 18'h30000;
   wire is_bottom_addr1 = addr1 < 18'h30000;
 
-  assign exc_out0 = (addr0_index == 4'hf) ? 
+  assign exc_out0 = (addr0_index == 4'hf && !(is_bottom_addr0 && kmode)) ? 
     // tlb miss exception
     ( kmode ? 8'h83 : // kmiss
               8'h82   // umiss
@@ -28,7 +42,7 @@ module tlb(input clk, input clk_en,
 
   assign exc_out1 = 
   (exc_in != 8'd0) ? exc_in : (
-  (addr1_index == 4'hf) ? 
+  (addr1_index == 4'hf  && !(is_bottom_addr0 && kmode)) ? 
     // tlb miss exception
     ( kmode ? 8'h83 : // kmiss
               8'h82   // umiss
