@@ -9,7 +9,7 @@ module decode(input clk, input clk_en,
     input we2, input [4:0]target_2, input [31:0]write_data_2,
     input cr_we,
 
-    input stall, input [7:0]exc_in, 
+    input stall, input [7:0]exc_in, input [7:0]tlb_exc_in,
     
     input [31:0]epc, input [31:0]efg, input [31:0]tlb_addr,
     input exc_in_wb, input tlb_exc_in_wb,
@@ -89,11 +89,12 @@ module decode(input clk, input clk_en,
 
   wire invalid_priv = is_priv && !kmode;
 
-  wire [7:0]exc_priv_instr = 
+  wire [7:0]exc_priv_instr = bubble_in ? 8'h0 : (
     invalid_instr ? 8'h80 :
     invalid_priv ? 8'h81 : 
     is_syscall ? exc_code :
-    0;
+    (tlb_exc_in != 8'h0) ? tlb_exc_in :
+    0);
 
   // 0 => offset, 1 => preincrement, 2 => postincrement
   wire [1:0]increment_type = instr_in[15:14];

@@ -83,8 +83,9 @@ module tlb(input clk, input clk_en,
     (key1 == cache[7][37:6] && cache[7][38]) ? 4'h7 :
     4'hf;
 
-  assign addr1_out = (is_bottom_addr1 && kmode) ? addr0[17:0] : (
+  assign addr1_out =
     is_exc ? {8'b0, exc_out1, 2'b0} : 
+    (is_bottom_addr1 && kmode) ? addr0[17:0] :
     {((addr1_index == 4'd0) ? cache[0][5:0] :
     (addr1_index == 4'd1) ? cache[1][5:0] :
     (addr1_index == 4'd2) ? cache[2][5:0] :
@@ -93,7 +94,7 @@ module tlb(input clk, input clk_en,
     (addr1_index == 4'd5) ? cache[5][5:0] :
     (addr1_index == 4'd6) ? cache[6][5:0] :
     (addr1_index == 4'd7) ? cache[7][5:0] :
-    6'd0), addr1[11:0]});
+    6'd0), addr1[11:0]};
 
   wire [3:0]addr2_index = 
     (read_addr == cache[0][37:6] && cache[0][38]) ? 4'h0 :

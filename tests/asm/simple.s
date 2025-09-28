@@ -5,4 +5,7 @@
   add  r3 r5 r7
   add  r3 r3 r3
   add  r3 r3 -4
+  sys  EXIT
+
+EXIT:
   mode halt     # should return 38 = 0x26

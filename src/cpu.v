@@ -134,12 +134,12 @@ module pipelined_cpu(
       reg_we_1, mem_tgt_out_1, reg_write_data_1,
       reg_we_2, mem_tgt_out_2, reg_write_data_2,
       mem_tgts_cr_out,
-      stall, fetch_b_exc_out, 
+      stall, fetch_b_exc_out, exc_tlb_1,
+
       mem_pc_out, {28'b0, mem_flags_out}, mem_tlbmiss_out,
       exc_in_wb, tlb_exc_in_wb, interrupts,
       interrupt_in_wb, rfe_in_wb, rfi_in_wb,
       clock_divider, pid, kmode, decode_exc_out,
-
       decode_op1_out, decode_op2_out, decode_cr_op_out, decode_pc_out,
       decode_opcode_out, decode_s_1_out, decode_s_2_out, decode_cr_s_out,
       decode_tgt_out_1, decode_tgt_out_2,
@@ -193,7 +193,7 @@ module pipelined_cpu(
       decode_pc_out, mem_opcode_out,
       decode_is_load_out, decode_is_store_out, decode_is_branch_out, mem_bubble_out, mem_is_load_out,
       decode_is_post_inc_out, decode_tgts_cr_out, decode_priv_type_out,
-      decode_crmov_mode_type_out, exc_tlb_1, exc_in_wb, flags_restore, rfe_in_wb,
+      decode_crmov_mode_type_out, decode_exc_out, exc_in_wb, flags_restore, rfe_in_wb,
       tlb_read,
 
       exec_result_out_1, exec_result_out_2,
@@ -223,6 +223,7 @@ module pipelined_cpu(
       exec_is_load_out, exec_is_store_out, exec_is_misaligned_out,
       exec_pc_out, exec_exc_out, exec_tgts_cr_out, exec_priv_type_out, 
       exec_crmov_mode_type_out, exec_flags_out, exec_op1_out, exec_op2_out,
+      exc_in_wb,
 
       mem_tgt_out_1, mem_tgt_out_2, 
       mem_result_out_1, mem_result_out_2,

@@ -115,7 +115,8 @@ module execute(input clk, input clk_en, input halt,
     (is_mem_w && (addr[1] || addr[0]))
   ) && !bubble_in && !was_misaligned;
 
-  assign stall = 
+  // TODO: account for cr mov instructions
+  assign stall = !exc_in_wb && (
    // dependencies on a lw can cause stalls
    ((((tgt_out_1 == s_1 ||
      tgt_out_1 == s_2) &&
@@ -134,7 +135,7 @@ module execute(input clk, input clk_en, input halt,
      is_load_mem &&
      !bubble_in && !mem_bubble) ||
     // misaligned memory can cause stalls
-    is_misaligned;
+    is_misaligned);
 
   // nonsense to make subtract immediate work how i want
   wire [31:0]lhs = (opcode == 5'd1 && alu_op == 5'd16) ? imm : op1;
@@ -264,7 +265,7 @@ module execute(input clk, input clk_en, input halt,
       priv_type_out <= priv_type;
       crmov_mode_type_out <= crmov_mode_type;
 
-      exc_out <= exc_in;
+      exc_out <= bubble_in ? 8'h0 : exc_in;
 
       pc_out <= decode_pc_out;
       op1_out <= op1;

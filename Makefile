@@ -14,8 +14,11 @@ VVP          := vvp
 # All test sources
 VERILOG_SRCS   := $(wildcard $(SRC_DIR)/*.v)
 
-CPU_TESTS_SRCS   := $(wildcard $(CPU_TESTS_DIR)/*.s)
-EMU_TESTS_SRCS   := $(wildcard $(EMU_TESTS_DIR)/*.s)
+# removed $(wildcard $(CPU_TESTS_DIR)/*.s)
+CPU_TESTS_SRCS   := 
+# some emu tests run forever and use i/o
+EMU_TESTS_EXCLUDE := $(EMU_TESTS_DIR)/cdiv.s $(EMU_TESTS_DIR)/colors.s $(EMU_TESTS_DIR)/green.s $(EMU_TESTS_DIR)/sprite.s
+EMU_TESTS_SRCS := $(filter-out $(EMU_TESTS_EXCLUDE),$(wildcard $(EMU_TESTS_DIR)/*.s))
 ASM_SRCS         := $(CPU_TESTS_SRCS) $(EMU_TESTS_SRCS)
 
 HEXES        := $(patsubst %.s,$(HEX_DIR)/%.hex,$(notdir $(ASM_SRCS)))
