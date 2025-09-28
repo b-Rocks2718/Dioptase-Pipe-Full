@@ -12,7 +12,7 @@ module memory(input clk, input clk_en, input halt,
     input [31:0]exec_pc_out, input [7:0]exc_in,
     input tgts_cr, input [4:0]priv_type, input [1:0]crmov_mode_type,
     input [3:0]flags_in,
-    input [31:0]op1, input [31:0]op2, input exc_in_wb,
+    input [31:0]op1, input [31:0]op2, input exc_in_wb, input rfe_in_wb,
     
     output reg [4:0]tgt_out_1, output reg [4:0]tgt_out_2,
     output reg [31:0]result_out_1, output reg [31:0]result_out_2,
@@ -41,7 +41,7 @@ module memory(input clk, input clk_en, input halt,
       opcode_out <= opcode_in;
       result_out_1 <= result_in_1;
       result_out_2 <= result_in_2;
-      bubble_out <= exc_in_wb ? 1 : bubble_in;
+      bubble_out <= (exc_in_wb || rfe_in_wb) ? 1 : bubble_in;
       addr_out <= addr_in;
 
       mem_pc_out <= exec_pc_out;

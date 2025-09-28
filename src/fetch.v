@@ -2,6 +2,7 @@
 
 module fetch_a(input clk, input clk_en, input stall, input flush,
     input branch, input [31:0]branch_tgt, input interrupt, input [31:0]interrupt_vector,
+    input rfe_in_wb, input [31:0]epc,
     output [31:0]fetch_addr, output reg [31:0]pc_out, output reg bubble_out, output reg [7:0]exc_out
   );
 
@@ -9,7 +10,6 @@ module fetch_a(input clk, input clk_en, input stall, input flush,
 
   // -4 is a hack to save a cycle on branches
   assign fetch_addr = 
-    interrupt ? interrupt_vector :
     branch ? branch_tgt : 
     (stall ? pc - 32'h4 : pc);
 
@@ -23,12 +23,11 @@ module fetch_a(input clk, input clk_en, input stall, input flush,
     if (clk_en) begin
       if (!stall) begin
         pc <= 
-          interrupt ?
-            interrupt_vector + 4 :
-            (branch ? 
-              branch_tgt + 4 : 
-              pc + 4); // +4 is a hack to save a cycle on branches
-        bubble_out <= 0;
+          interrupt ? interrupt_vector :
+          rfe_in_wb ? epc : 
+          branch ? branch_tgt + 4 : 
+          pc + 4; // +4 is a hack to save a cycle on branches
+        bubble_out <= rfe_in_wb || interrupt;
         pc_out <= fetch_addr;
 
         // misaligned pc exception

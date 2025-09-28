@@ -21,7 +21,7 @@ module execute(input clk, input clk_en, input halt,
     input is_load, input is_store, input is_branch, input mem_bubble, input is_load_mem,
     input is_post_inc, input tgts_cr,
     input [4:0]priv_type, input [1:0]crmov_mode_type,
-    input [7:0]exc_in, input exc_in_wb, input [31:0]flags_restore, input flags_we,
+    input [7:0]exc_in, input exc_in_wb, input [31:0]flags_restore, input rfe_in_wb,
     input [5:0]tlb_read,
 
     output reg [31:0]result_1, output reg [31:0]result_2,
@@ -38,6 +38,7 @@ module execute(input clk, input clk_en, input halt,
     output reg is_load_out, output reg is_store_out, output reg was_misaligned,
     output reg tgts_cr_out, output reg [4:0]priv_type_out, output reg [1:0]crmov_mode_type_out,
     output reg [7:0]exc_out, output reg [31:0]pc_out,
+    output [31:0]op1, output [31:0]op2,
     output reg [31:0]op1_out, output reg [31:0]op2_out
   );
 
@@ -65,9 +66,6 @@ module execute(input clk, input clk_en, input halt,
   reg [31:0]reg_data_buf_b_2;
   reg tgts_cr_buf_a;
   reg tgts_cr_buf_b;
-
-  wire [31:0]op1;
-  wire [31:0]op2;
 
   wire is_mem_w = (5'd3 <= opcode && opcode <= 5'd5);
   wire is_mem_d = (5'd6 <= opcode && opcode <= 5'd8);
@@ -116,7 +114,7 @@ module execute(input clk, input clk_en, input halt,
   ) && !bubble_in && !was_misaligned;
 
   // TODO: account for cr mov instructions
-  assign stall = !exc_in_wb && (
+  assign stall = !exc_in_wb && !rfe_in_wb && (
    // dependencies on a lw can cause stalls
    ((((tgt_out_1 == s_1 ||
      tgt_out_1 == s_2) &&
@@ -183,7 +181,8 @@ module execute(input clk, input clk_en, input halt,
     ) :
     32'h0;
 
-  wire we_bit = is_store && !bubble_in && !exc_in_wb && !exc_out && (!stall || is_misaligned);
+  wire we_bit = is_store && !bubble_in && !exc_in_wb 
+                && !rfe_in_wb && !exc_out && (!stall || is_misaligned);
 
   assign we = 
     is_mem_w ? (
@@ -233,7 +232,7 @@ module execute(input clk, input clk_en, input halt,
 
   wire [31:0]alu_rslt;
   ALU ALU(clk, opcode, alu_op, lhs, rhs, bubble_in, 
-    flags_restore, flags_we,
+    flags_restore, rfe_in_wb,
     alu_rslt, flags);
 
   always @(posedge clk) begin
@@ -241,17 +240,19 @@ module execute(input clk, input clk_en, input halt,
                   // jump and link
       result_1 <= (opcode == 5'd13 || opcode == 5'd14) ? decode_pc_out + 32'd4 : 
                   // crmov reading from control reg
-                  (opcode == 5'd31 && priv_type == 5'd1 && crmov_mode_type <= 2'd1) ? reg_out_cr :
+                  (opcode == 5'd31 && priv_type == 5'd1 && crmov_mode_type >= 2'd1) ? reg_out_cr :
+                  // crmov reading from normal reg
+                  (opcode == 5'd31 && priv_type == 5'd1 && crmov_mode_type == 2'd0) ? op1 :
                   // tlbr
                   (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd0) ? {26'b0, tlb_read} :
                   // everything else
                   alu_rslt;
 
       result_2 <= alu_rslt;
-      tgt_out_1 <= (exc_in_wb || stall) ? 5'd0 : tgt_1;
-      tgt_out_2 <= (exc_in_wb || stall) ? 5'd0 : tgt_2;
+      tgt_out_1 <= (exc_in_wb || rfe_in_wb || stall) ? 5'd0 : tgt_1;
+      tgt_out_2 <= (exc_in_wb || rfe_in_wb || stall) ? 5'd0 : tgt_2;
       opcode_out <= opcode;
-      bubble_out <= (exc_in_wb || (stall && !is_misaligned)) ? 1 : bubble_in;
+      bubble_out <= (exc_in_wb || rfe_in_wb || (stall && !is_misaligned)) ? 1 : bubble_in;
 
       addr_out <= addr;
       
@@ -310,7 +311,7 @@ module execute(input clk, input clk_en, input halt,
                  (branch_code == 5'd18) ? !flags[0] || flags[1] : // bbe
                  0;
 
-  assign branch = !bubble_in && !exc_in_wb && taken && is_branch;
+  assign branch = !bubble_in && !exc_in_wb && !rfe_in_wb && taken && is_branch;
   
   assign branch_tgt = 
             (opcode == 5'd12) ? decode_pc_out + imm + 32'h4 :

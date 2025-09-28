@@ -11,8 +11,6 @@ Pipeline implementation of [Dioptase-Emulator-Full](https://github.com/b-Rocks27
 - mem
 - writeback
 
-Memory stage path length limited JPEB to 50Mhz, running Dioptase at 100MHz would be nice
-
 ## Usage
 
 Use `make all` or `make sim.vvp` to build the project.

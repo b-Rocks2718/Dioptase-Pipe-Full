@@ -2,6 +2,7 @@ module tlb(input clk, input clk_en,
   input kmode, input [11:0]pid,
   input [31:0]addr0, input [31:0]addr1, input [31:0]read_addr,
   input we, input [31:0]write_data, input [7:0]exc_in, input clear,
+  input bubble1, input stall, 
 
   output [7:0]exc_out0, output [7:0]exc_out1,
   output [17:0]addr0_out, output [17:0]addr1_out, output [5:0]read_addr_out
@@ -42,7 +43,7 @@ module tlb(input clk, input clk_en,
 
   assign exc_out1 = 
   (exc_in != 8'd0) ? exc_in : (
-  (addr1_index == 4'hf  && !(is_bottom_addr0 && kmode)) ? 
+  (addr1_index == 4'hf  && !(is_bottom_addr1 && kmode) && !bubble1) ? 
     // tlb miss exception
     ( kmode ? 8'h83 : // kmiss
               8'h82   // umiss
@@ -119,7 +120,7 @@ module tlb(input clk, input clk_en,
     6'd0;
 
   always @(posedge clk) begin
-    if (clk_en) begin
+    if (clk_en && !stall) begin
       if (we && !clear) begin
         cache[eviction_tgt] <= {1'b1, read_addr, write_data[5:0]};
         eviction_tgt <= eviction_tgt + 3'd1;
