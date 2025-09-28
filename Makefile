@@ -17,7 +17,7 @@ VERILOG_SRCS   := $(wildcard $(SRC_DIR)/*.v)
 # removed $(wildcard $(CPU_TESTS_DIR)/*.s)
 CPU_TESTS_SRCS   := 
 # some emu tests run forever and use i/o
-EMU_TESTS_EXCLUDE := $(EMU_TESTS_DIR)/cdiv.s $(EMU_TESTS_DIR)/colors.s $(EMU_TESTS_DIR)/green.s $(EMU_TESTS_DIR)/sprite.s
+EMU_TESTS_EXCLUDE := $(EMU_TESTS_DIR)/cdiv.s $(EMU_TESTS_DIR)/colors.s $(EMU_TESTS_DIR)/green.s $(EMU_TESTS_DIR)/sprite.s $(EMU_TESTS_DIR)/uart.s
 EMU_TESTS_SRCS := $(filter-out $(EMU_TESTS_EXCLUDE),$(wildcard $(EMU_TESTS_DIR)/*.s))
 ASM_SRCS         := $(CPU_TESTS_SRCS) $(EMU_TESTS_SRCS)
 

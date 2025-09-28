@@ -85,7 +85,7 @@ module tlb(input clk, input clk_en,
 
   assign addr1_out =
     is_exc ? {8'b0, exc_out1, 2'b0} : 
-    (is_bottom_addr1 && kmode) ? addr0[17:0] :
+    (is_bottom_addr1 && kmode) ? addr1[17:0] :
     {((addr1_index == 4'd0) ? cache[0][5:0] :
     (addr1_index == 4'd1) ? cache[1][5:0] :
     (addr1_index == 4'd2) ? cache[2][5:0] :
