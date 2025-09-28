@@ -1,4 +1,5 @@
 # test a bunch of dependencies
+  .kernel
 _start:
   lw r1 [A]
   lwa r4 [r1] # should load second instruction (this instruction)
@@ -6,7 +7,7 @@ _start:
   lw  r3, [B]
   add r3, r3, 2
   add r3, r3, -1
-  sys EXIT
+  mode halt
 
 A:
   .fill 4

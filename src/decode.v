@@ -164,7 +164,7 @@ module decode(input clk, input clk_en,
           s_2_out <= s_2;
           cr_s_out <= r_b;
 
-          tgt_out_1 <= (flush || bubble_in || is_store || priv_instr_tgts_ra) ? 5'b0 : r_a;
+          tgt_out_1 <= (flush || bubble_in || is_store) ? 5'b0 : r_a;
           tgt_out_2 <= (flush || bubble_in || !is_absolute_mem || increment_type == 5'd0) ? 5'b0 : r_b;
 
           imm_out <= imm;

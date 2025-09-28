@@ -245,6 +245,7 @@ module pipelined_cpu(
       reg_we_1, wb_tgt_out_1, wb_result_out_1,
       reg_we_2, wb_tgt_out_2, wb_result_out_2,
       exc_in_wb, interrupt_in_wb, rfe_in_wb, rfi_in_wb,
+      tlb_exc_in_wb,
       wb_halt, wb_sleep);
 
     always @(posedge clk) begin

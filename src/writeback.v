@@ -17,6 +17,7 @@ module writeback(input clk, input clk_en, input halt, input bubble_in,
     output we1, output reg [4:0]wb_tgt_out_1, output reg [31:0]wb_result_out_1,
     output we2, output reg [4:0]wb_tgt_out_2, output reg [31:0]wb_result_out_2,
     output exc_in_wb, output interrupt_in_wb, output rfe_in_wb, output rfi_in_wb,
+    output tlb_exc_in_wb,
     output halt_out, output sleep_out
   );
 
@@ -33,6 +34,7 @@ module writeback(input clk, input clk_en, input halt, input bubble_in,
   assign interrupt_in_wb = (exc_in[7:4] == 4'hf) && !bubble_in;
   assign rfe_in_wb = opcode == 5'd31 && priv_type == 5'd3 && !bubble_in && !exc_in_wb;
   assign rfi_in_wb = rfe_in_wb && crmov_mode_type[1] == 1'b1 && !bubble_in && !exc_in_wb;
+  assign tlb_exc_in_wb = exc_in_wb && (exc_in == 8'h82 || exc_in == 8'h83);
   
   assign halt_out = (opcode == 5'd31) && (priv_type == 5'd2) && (crmov_mode_type == 2'd2) && !bubble_in && !exc_in_wb;
   assign sleep_out = (opcode == 5'd31) && (priv_type == 5'd2) && (crmov_mode_type == 2'd1) && !bubble_in && !exc_in_wb;

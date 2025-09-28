@@ -1,3 +1,4 @@
+  .kernel
 # test a bunch of dependencies
 _start:
   movi r10, 100
@@ -13,8 +14,8 @@ _start:
   cmp  r1, 0x10
   bnz  garbage
   mov  r3, r1 
-  sys EXIT
+  mode halt
 
 garbage:
   movi r3, 12
-  sys EXIT
+  mode halt

@@ -61,6 +61,8 @@ module cregfile(input clk,
   assign interrupt_state = cregfile[3][31] ?
     (cregfile[2] & cregfile[3]) : 32'd0;
 
+  wire [31:0]psr = cregfile[0];
+
   always @(posedge clk) begin
     if (wen0) begin
       cregfile[waddr0] <= wdata0;

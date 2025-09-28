@@ -1,6 +1,7 @@
+  .kernel
   movi r2, 0x1000
   lwa r3, [r2, 2]
-  sys EXIT
+  mode halt
 
   .origin 0x1000
 X:
