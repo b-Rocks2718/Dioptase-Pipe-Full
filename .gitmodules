@@ -1,0 +1,3 @@
+[submodule "extern/vgasim"]
+	path = extern/vgasim
+	url = https://github.com/ZipCPU/vgasim

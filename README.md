@@ -23,4 +23,4 @@ Run the tests with `verilator` using `make test_verilator`.
 
 The test suite consists of all tests used for verifying the emulator, in addition pipeline-specific tests to ensure forwarding, stalls, and misaligned memory accesses are handled correctly.
 
-I'd like to set up verilator and use it to simulate the VGA output
+I'm using [VGASIM](https://github.com/ZipCPU/vgasim) to test I/O
