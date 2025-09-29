@@ -16,7 +16,7 @@ module fetch_a(input clk, input clk_en, input stall, input flush,
   initial begin
     bubble_out = 1;
     pc = 32'h00000400;
-    exc_out <= 8'd0;
+    exc_out = 8'd0;
   end
 
   always @(posedge clk) begin
@@ -47,7 +47,7 @@ module fetch_b(input clk, input clk_en, input stall, input flush, input bubble_i
 
     initial begin
       bubble_out = 1;
-      exc_out <= 8'd0;
+      exc_out = 8'd0;
     end
 
     always @(posedge clk) begin 

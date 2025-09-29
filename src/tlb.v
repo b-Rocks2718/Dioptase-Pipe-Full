@@ -16,14 +16,14 @@ module tlb(input clk, input clk_en,
 
   initial begin
     begin
-      cache[0] <= 39'b0;
-      cache[1] <= 39'b0;
-      cache[2] <= 39'b0;
-      cache[3] <= 39'b0;
-      cache[4] <= 39'b0;
-      cache[5] <= 39'b0;
-      cache[6] <= 39'b0;
-      cache[7] <= 39'b0;
+      cache[0] = 39'b0;
+      cache[1] = 39'b0;
+      cache[2] = 39'b0;
+      cache[3] = 39'b0;
+      cache[4] = 39'b0;
+      cache[5] = 39'b0;
+      cache[6] = 39'b0;
+      cache[7] = 39'b0;
     end
   end
 

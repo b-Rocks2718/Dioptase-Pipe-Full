@@ -31,7 +31,7 @@ module memory(input clk, input clk_en, input halt,
     tgt_out_1 = 5'd0;
     tgt_out_2 = 5'd0;
 
-    exc_out <= 5'd0;
+    exc_out = 8'd0;
   end
 
   always @(posedge clk) begin

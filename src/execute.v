@@ -53,7 +53,7 @@ module execute(input clk, input clk_en, input halt,
     tgts_cr_buf_a = 0;
     tgts_cr_buf_b = 0;
 
-    exc_out <= 5'd0;
+    exc_out = 8'd0;
   end
 
   reg [4:0]reg_tgt_buf_a_1;
@@ -96,14 +96,6 @@ module execute(input clk, input clk_en, input halt,
     (reg_tgt_buf_b_1 == s_2 && s_2 != 5'b0) ? reg_data_buf_b_1 :
     (reg_tgt_buf_b_2 == s_2 && s_2 != 5'b0) ? reg_data_buf_b_2 :
     reg_out_2;
-
-  assign cr_op = 
-    (tgt_out_1 == cr_s && tgts_cr_out) ? result_1 :
-    (mem_tgt_1 == cr_s && mem_tgts_cr) ? mem_result_out_1 : 
-    (wb_tgt_1 == cr_s && wb_tgts_cr) ? wb_result_out_1 :
-    (reg_tgt_buf_a_1 == cr_s && tgts_cr_buf_a) ? reg_data_buf_a_1 :
-    (reg_tgt_buf_b_1 == cr_s && tgts_cr_buf_b) ? reg_data_buf_b_1 :
-    reg_out_cr;
 
   reg [31:0]addr_buf;
   reg [31:0]data_buf;
@@ -182,7 +174,7 @@ module execute(input clk, input clk_en, input halt,
     32'h0;
 
   wire we_bit = is_store && !bubble_in && !exc_in_wb 
-                && !rfe_in_wb && !exc_out && (!stall || is_misaligned);
+                && !rfe_in_wb && (exc_out != 8'd0) && (!stall || is_misaligned);
 
   assign we = 
     is_mem_w ? (

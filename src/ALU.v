@@ -26,6 +26,8 @@ module ALU(input clk,
   wire [32:0]carry_diff;
   assign carry_diff = {1'b0, s_2_subb} + {1'b0, s_1};
 
+  wire [63:0]asr_value = ({{32{ s_1[31] }}, s_1} >> s_2);
+
   assign result = (op == 5'd0 || op == 5'd1) ? (
       (alu_op == 5'd0) ? (s_1 & s_2) : // and
       (alu_op == 5'd1) ? (~(s_1 & s_2)) : // nand
@@ -36,7 +38,7 @@ module ALU(input clk,
       (alu_op == 5'd6) ? (~s_2) : // not
       (alu_op == 5'd7) ? (s_1 << s_2) : // lsl
       (alu_op == 5'd8) ? (s_1 >> s_2) : // lsr
-      (alu_op == 5'd9) ? ({{32{ s_1[31] }}, s_1} >> s_2) : // asr
+      (alu_op == 5'd9) ? asr_value[31:0] : // asr
       (alu_op == 5'd10) ? ((s_1 << s_2) | (s_1 >> (32 - s_2))) : // rotl
       (alu_op == 5'd11) ? ((s_1 >> s_2) | (s_1 << (32 - s_2))) : // rotr
       (alu_op == 5'd12) ? ((s_1 << s_2) | ({flags[0], 31'b0} >> (32 - s_2)) | (s_1 >> (33 - s_2))) : // lslc 

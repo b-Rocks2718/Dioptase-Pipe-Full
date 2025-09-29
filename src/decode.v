@@ -49,7 +49,7 @@ module decode(input clk, input clk_en,
   // alu_op location is different for alu-reg and alu-imm instructions
   wire [4:0]alu_op = (opcode == 5'd0) ? instr_in[9:5] : instr_in[16:12];
   
-  wire is_bitwise = (5'd0 <= alu_op && alu_op <= 5'd6);
+  wire is_bitwise = (alu_op <= 5'd6);
   wire is_shift = (5'd7 <= alu_op && alu_op <= 5'd13);
   wire is_arithmetic = (5'd14 <= alu_op && alu_op <= 5'd18);
 
@@ -146,7 +146,7 @@ module decode(input clk, input clk_en,
     bubble_out = 1;
     tgt_out_1 = 5'b00000;
     tgt_out_2 = 5'b00000;
-    exc_out <= 8'd0;
+    exc_out = 8'd0;
   end
 
   wire priv_instr_tgts_ra = 
@@ -165,7 +165,7 @@ module decode(input clk, input clk_en,
           cr_s_out <= r_b;
 
           tgt_out_1 <= (flush || bubble_in || is_store) ? 5'b0 : r_a;
-          tgt_out_2 <= (flush || bubble_in || !is_absolute_mem || increment_type == 5'd0) ? 5'b0 : r_b;
+          tgt_out_2 <= (flush || bubble_in || !is_absolute_mem || increment_type == 2'd0) ? 5'b0 : r_b;
 
           imm_out <= imm;
           branch_code_out <= branch_code;

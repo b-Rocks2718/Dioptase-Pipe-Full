@@ -13,7 +13,7 @@ module pipelined_cpu(
     reg [31:0]clk_count = 32'b0;
 
     initial begin
-      clk_en <= 1;
+      clk_en = 1;
     end
 
     wire [11:0]pid;
@@ -47,6 +47,7 @@ module pipelined_cpu(
     wire branch;
     wire flush;
     wire wb_halt;
+    wire wb_sleep;
     wire exc_in_wb;
     wire tlb_exc_in_wb;
     wire interrupt_in_wb;
@@ -60,7 +61,7 @@ module pipelined_cpu(
     assign mem_read1_addr = tlb_out_1;
     assign mem_out_0 = mem_read0_data;
     assign mem_out_1 = mem_read1_data;
-    assign mem_write_addr = addr;
+    assign mem_write_addr = tlb_out_1;
     assign mem_write_data = store_data;
 
     wire stall;
@@ -258,7 +259,7 @@ module pipelined_cpu(
     always @(posedge clk) begin
       if (clk_en) begin
         halt <= halt ? 1 : wb_halt;
-        sleep <= sleep ? (interrupts == 8'b0) : wb_sleep;
+        sleep <= sleep ? (interrupts == 16'b0) : wb_sleep;
       end
 
       if (clk_count >= clock_divider) begin

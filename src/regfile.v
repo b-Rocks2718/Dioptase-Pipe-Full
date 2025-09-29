@@ -44,19 +44,19 @@ module cregfile(input clk,
   reg [31:0]cregfile[0:5'b111];
 
   initial begin
-    cregfile[0] <= 1;
-    cregfile[1] <= 0;
-    cregfile[2] <= 0;
-    cregfile[3] <= 0;
-    cregfile[4] <= 0;
-    cregfile[5] <= 0;
-    cregfile[6] <= 0;
-    cregfile[7] <= 0;
+    cregfile[0] = 1;
+    cregfile[1] = 0;
+    cregfile[2] = 0;
+    cregfile[3] = 0;
+    cregfile[4] = 0;
+    cregfile[5] = 0;
+    cregfile[6] = 0;
+    cregfile[7] = 0;
   end
 
   assign cdv_out = cregfile[6];
   assign pid = cregfile[1][11:0];
-  assign kmode = (cregfile[0] != 31'd0);
+  assign kmode = (cregfile[0] != 32'd0);
 
   assign interrupt_state = cregfile[3][31] ?
     (cregfile[2] & cregfile[3]) : 32'd0;
@@ -65,12 +65,12 @@ module cregfile(input clk,
 
   always @(posedge clk) begin
     if (wen0) begin
-      cregfile[waddr0] <= wdata0;
+      cregfile[waddr0[2:0]] <= wdata0;
     end
 
     if (!stall) begin
       if (!exc_in_wb && !rfe_in_wb) begin
-        rdata0 <= (raddr0 == 0) ? 32'b0 : cregfile[raddr0];
+        rdata0 <= (raddr0 == 0) ? 32'b0 : cregfile[raddr0[2:0]];
       end else if (exc_in_wb) begin
         if (tlb_exc_in_wb) begin
           cregfile[7] <= tlb_addr;

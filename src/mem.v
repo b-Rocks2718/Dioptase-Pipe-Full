@@ -6,7 +6,7 @@ module mem(input clk, input clk_en,
     input [3:0]wen, input [17:0]waddr, input [31:0]wdata
 );
 
-    reg [31:0]ram[0:18'h3ffff];
+    reg [31:0]ram[0:16'hffff];
 
     reg [1023:0] hexfile; // buffer for filename
 
