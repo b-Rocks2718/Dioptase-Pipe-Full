@@ -18,14 +18,11 @@ module mem(input clk, input clk_en,
         $readmemh(hexfile, ram);  // mem is your instruction/data memory
     end
 
-    reg wen_buf;
-
     reg [31:0]data0_out;
     reg [31:0]data1_out;
 
     always @(posedge clk) begin
       if (clk_en) begin
-        wen_buf <= wen;
 
         data0_out <= ram[raddr0[17:2]];
         data1_out <= ram[raddr1[17:2]];

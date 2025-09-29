@@ -174,7 +174,7 @@ module execute(input clk, input clk_en, input halt,
     32'h0;
 
   wire we_bit = is_store && !bubble_in && !exc_in_wb 
-                && !rfe_in_wb && (exc_out != 8'd0) && (!stall || is_misaligned);
+                && !rfe_in_wb && (exc_out == 8'd0) && (!stall || is_misaligned);
 
   assign we = 
     is_mem_w ? (
