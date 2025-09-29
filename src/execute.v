@@ -22,7 +22,7 @@ module execute(input clk, input clk_en, input halt,
     input is_post_inc, input tgts_cr,
     input [4:0]priv_type, input [1:0]crmov_mode_type,
     input [7:0]exc_in, input exc_in_wb, input [31:0]flags_restore, input rfe_in_wb,
-    input [5:0]tlb_read,
+    input [5:0]tlb_read, input [7:0]tlb_exc_in,
 
     output reg [31:0]result_1, output reg [31:0]result_2,
     output [31:0]addr, output [31:0]store_data, output [3:0]we, output reg [31:0]addr_out,
@@ -33,7 +33,7 @@ module execute(input clk, input clk_en, input halt,
     output branch, output [31:0]branch_tgt,
     output [3:0]flags, output reg [3:0]flags_out,
 
-    output stall, 
+    output stall, output is_misaligned,
 
     output reg is_load_out, output reg is_store_out, output reg was_misaligned,
     output reg tgts_cr_out, output reg [4:0]priv_type_out, output reg [1:0]crmov_mode_type_out,
@@ -108,7 +108,7 @@ module execute(input clk, input clk_en, input halt,
   reg [31:0]addr_buf;
   reg [31:0]data_buf;
 
-  wire is_misaligned = ( 
+  assign is_misaligned = ( 
     (is_mem_d && addr[1] && addr[0]) ||
     (is_mem_w && (addr[1] || addr[0]))
   ) && !bubble_in && !was_misaligned;
@@ -266,7 +266,8 @@ module execute(input clk, input clk_en, input halt,
       priv_type_out <= priv_type;
       crmov_mode_type_out <= crmov_mode_type;
 
-      exc_out <= bubble_in ? 8'h0 : exc_in;
+      exc_out <= bubble_in ? 8'h0 : 
+              (tlb_exc_in != 8'h0) ? tlb_exc_in : exc_in;
 
       pc_out <= decode_pc_out;
       op1_out <= op1;

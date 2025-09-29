@@ -109,18 +109,18 @@ module tlb(input clk, input clk_en,
     4'hf;
 
   assign read_addr_out = 
-    (read_addr == 4'd0) ? cache[0][5:0] :
-    (read_addr == 4'd1) ? cache[1][5:0] :
-    (read_addr == 4'd2) ? cache[2][5:0] :
-    (read_addr == 4'd3) ? cache[3][5:0] :
-    (read_addr == 4'd4) ? cache[4][5:0] :
-    (read_addr == 4'd5) ? cache[5][5:0] :
-    (read_addr == 4'd6) ? cache[6][5:0] :
-    (read_addr == 4'd7) ? cache[7][5:0] :
+    (addr2_index == 4'd0) ? cache[0][5:0] :
+    (addr2_index == 4'd1) ? cache[1][5:0] :
+    (addr2_index == 4'd2) ? cache[2][5:0] :
+    (addr2_index == 4'd3) ? cache[3][5:0] :
+    (addr2_index == 4'd4) ? cache[4][5:0] :
+    (addr2_index == 4'd5) ? cache[5][5:0] :
+    (addr2_index == 4'd6) ? cache[6][5:0] :
+    (addr2_index == 4'd7) ? cache[7][5:0] :
     6'd0;
 
   always @(posedge clk) begin
-    if (clk_en && !stall) begin
+    if (clk_en) begin
       if (we && !clear) begin
         cache[eviction_tgt] <= {1'b1, read_addr, write_data[5:0]};
         eviction_tgt <= eviction_tgt + 3'd1;

@@ -46,7 +46,7 @@ module memory(input clk, input clk_en, input halt,
 
       mem_pc_out <= exec_pc_out;
       exc_out <= bubble_in ? 8'h0 : exc_in;
-      tgts_cr_out <= tgts_cr;
+      tgts_cr_out <= tgts_cr && !bubble_in;
       priv_type_out <= priv_type;
       crmov_mode_type_out <= crmov_mode_type;
       flags_out <= flags_in;

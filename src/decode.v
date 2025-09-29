@@ -9,7 +9,8 @@ module decode(input clk, input clk_en,
     input we2, input [4:0]target_2, input [31:0]write_data_2,
     input cr_we,
 
-    input stall, input [7:0]exc_in, input [7:0]tlb_exc_in,
+    input stall, input misaligned,
+    input [7:0]exc_in,
     
     input [31:0]epc, input [31:0]efg, input [31:0]tlb_addr,
     input exc_in_wb, input tlb_exc_in_wb,
@@ -93,7 +94,6 @@ module decode(input clk, input clk_en,
     invalid_instr ? 8'h80 :
     invalid_priv ? 8'h81 : 
     is_syscall ? exc_code :
-    (tlb_exc_in != 8'h0) ? tlb_exc_in :
     0);
 
   // 0 => offset, 1 => preincrement, 2 => postincrement
@@ -183,7 +183,9 @@ module decode(input clk, input clk_en,
 
           tlb_we <= (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd1);
           tlbc   <= (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd2);
+        end
 
+        if (~stall || misaligned) begin
           exc_out <= (interrupt_state != 0) ? (
             interrupt_state[15] ? 8'hFF :
             interrupt_state[14] ? 8'hFE :

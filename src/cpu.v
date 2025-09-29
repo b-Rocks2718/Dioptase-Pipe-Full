@@ -18,7 +18,7 @@ module pipelined_cpu(
 
     wire [11:0]pid;
     wire [3:0]mem_flags_out;
-    wire [31:0]mem_tlbmiss_out;
+    wire [31:0]mem_addr_out;
 
     reg halt = 0;
     reg sleep = 0;
@@ -136,14 +136,17 @@ module pipelined_cpu(
 
     wire mem_tgts_cr_out;
 
+    wire is_misaligned;
+
     decode decode(clk, clk_en, flush, halt_or_sleep,
       mem_out_0, fetch_b_bubble_out, fetch_b_pc_out,
       reg_we_1, mem_tgt_out_1, reg_write_data_1,
       reg_we_2, mem_tgt_out_2, reg_write_data_2,
       mem_tgts_cr_out,
-      stall, fetch_b_exc_out, exc_tlb_1,
+      stall, is_misaligned,
+      fetch_b_exc_out,
 
-      mem_pc_out, {28'b0, mem_flags_out}, mem_tlbmiss_out,
+      mem_pc_out, {28'b0, mem_flags_out}, {12'b0, mem_addr_out[31:12]},
       exc_in_wb, tlb_exc_in_wb, interrupts,
       interrupt_in_wb, rfe_in_wb, rfi_in_wb,
       clock_divider, pid, kmode, decode_exc_out,
@@ -200,12 +203,12 @@ module pipelined_cpu(
       decode_is_load_out, decode_is_store_out, decode_is_branch_out, mem_bubble_out, mem_is_load_out,
       decode_is_post_inc_out, decode_tgts_cr_out, decode_priv_type_out,
       decode_crmov_mode_type_out, decode_exc_out, exc_in_wb, mem_op2_out, rfe_in_wb,
-      tlb_read,
+      tlb_read, exc_tlb_1,
 
       exec_result_out_1, exec_result_out_2,
       addr, store_data, mem_we, exec_addr_out,
       exec_opcode_out, exec_tgt_out_1, exec_tgt_out_2, exec_bubble_out, 
-      branch, branch_tgt, flags, exec_flags_out, stall,
+      branch, branch_tgt, flags, exec_flags_out, stall, is_misaligned,
       exec_is_load_out, exec_is_store_out, exec_is_misaligned_out,
       exec_tgts_cr_out, exec_priv_type_out, exec_crmov_mode_type_out,
       exec_exc_out, exec_pc_out,
@@ -216,7 +219,6 @@ module pipelined_cpu(
     wire mem_is_load_out;
     wire mem_is_store_out;
     wire mem_is_misaligned_out;
-    wire [31:0]mem_addr_out;
 
     wire [7:0]mem_exc_out;
     wire [4:0]mem_priv_type_out;
