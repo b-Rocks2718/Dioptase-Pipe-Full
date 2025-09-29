@@ -1,3 +1,5 @@
+`timescale 1ps/1ps
+
 module tlb(input clk, input clk_en,
   input kmode, input [11:0]pid,
   input [31:0]addr0, input [31:0]addr1, input [31:0]read_addr,

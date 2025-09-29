@@ -1,10 +1,10 @@
 `timescale 1ps/1ps
 
-module dioptase();
-
-    reg reset = 0;
-    wire clk;
-
+module dioptase(
+`ifdef VERILATOR
+    input clk
+`endif
+);
     reg [1023:0] vcdfile;
     initial begin
       if ($value$plusargs("vcd=%s", vcdfile)) begin
@@ -15,7 +15,10 @@ module dioptase();
       $dumpvars(0, dioptase);
     end
 
-    clock c0(clk);
+    `ifndef VERILATOR
+      wire clk;
+      clock c0(clk);
+    `endif
 
     // Memory
     wire [17:0]mem_read0_addr;
