@@ -16,7 +16,10 @@ Pipeline implementation of [Dioptase-Emulator-Full](https://github.com/b-Rocks27
 Use `make all` or `make sim.vvp` to build the project.
 Run it on a hex file with `./sim.vvp +hex=<file.hex>`
 
-Run the tests with `make all`.
+Build it with verilator using `make verilator`.
+
+Run the tests with `iverilog` using `make test`.  
+Run the tests with `verilator` using `make test_verilator`.  
 
 The test suite consists of all tests used for verifying the emulator, in addition pipeline-specific tests to ensure forwarding, stalls, and misaligned memory accesses are handled correctly.
 

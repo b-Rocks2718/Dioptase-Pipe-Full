@@ -13,6 +13,7 @@ VVP          := vvp
 
 # All test sources
 VERILOG_SRCS   := $(wildcard $(SRC_DIR)/*.v)
+VERILATOR_SRCS := src/cpu.v src/fetch.v src/decode.v src/execute.v src/regfile.v src/ALU.v src/memory.v src/mem.v src/writeback.v src/counter.v src/tlb.v src/top.v sim_main.cpp
 
 CPU_TESTS_SRCS   := $(wildcard $(CPU_TESTS_DIR)/*.s)
 # some emu tests run forever and use i/o
@@ -30,6 +31,10 @@ TOTAL            := $(words $(ASM_SRCS))
 .PRECIOUS: %.hex %.vout %.emuout %.vcd
 
 all: sim.vvp
+
+# no idea why this doesnt work
+verilator: $(VERILATOR_SRCS)
+	verilator --cc --exe --build $(VERILATOR_SRCS) -o dioptase
 
 # Compile Verilog into sim.vvp once
 sim.vvp: $(wildcard $(SRC_DIR)/*.v)
@@ -96,12 +101,48 @@ test: $(ASM_SRCS) $(VERILOG_SRCS) | dirs
 	echo; \
 	echo "Summary: $$passed / $$total tests passed."
 
+# Main test target
+test_verilator: $(ASM_SRCS) $(VERILOG_SRCS) | dirs
+	@GREEN="\033[0;32m"; \
+	RED="\033[0;31m"; \
+	YELLOW="\033[0;33m"; \
+	NC="\033[0m"; \
+	passed=0; total=$(TOTAL); \
+	verilator --cc --exe --build src/cpu.v src/fetch.v src/decode.v src/execute.v src/regfile.v src/ALU.v src/memory.v src/mem.v src/writeback.v src/counter.v src/tlb.v src/top.v sim_main.cpp -o dioptase; \
+	echo "Running $(words $(EMU_TESTS_SRCS)) instruction tests:"; \
+	for t in $(basename $(notdir $(EMU_TESTS_SRCS))); do \
+	  printf "%s %-20s " '-' "$$t"; \
+	  $(ASSEMBLER) $(EMU_TESTS_DIR)/$$t.s -o $(HEX_DIR)/$$t.hex && \
+	  $(EMULATOR) $(HEX_DIR)/$$t.hex > $(OUT_DIR)/$$t.emuout && \
+	  ./obj_dir/dioptase +hex=$(HEX_DIR)/$$t.hex --noinfo 2>/dev/null | head -n 1 > $(OUT_DIR)/$$t.vout ; \
+	  if cmp --silent $(OUT_DIR)/$$t.emuout $(OUT_DIR)/$$t.vout; then \
+	    echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
+	  else \
+	    echo "$$RED FAIL $$NC"; \
+	  fi; \
+	done; \
+	echo; \
+	echo "Running $(words $(CPU_TESTS_SRCS)) pipeline tests:"; \
+	for t in $(basename $(notdir $(CPU_TESTS_SRCS))); do \
+	  printf "%s %-20s " '-' "$$t"; \
+	  $(ASSEMBLER) $(CPU_TESTS_DIR)/$$t.s -o $(HEX_DIR)/$$t.hex -nostart && \
+	  $(EMULATOR) $(HEX_DIR)/$$t.hex > $(OUT_DIR)/$$t.emuout && \
+	  ./obj_dir/dioptase +hex=$(HEX_DIR)/$$t.hex --noinfo 2>/dev/null | head -n 1 > $(OUT_DIR)/$$t.vout ; \
+	  if cmp --silent $(OUT_DIR)/$$t.emuout $(OUT_DIR)/$$t.vout; then \
+	    echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
+	  else \
+	    echo "$$RED FAIL $$NC"; \
+	  fi; \
+	done; \
+	echo; \
+	echo "Summary: $$passed / $$total tests passed."
+
 .PHONY: test dirs clean
 
 clean:
 	rm -f $(OUT_DIR)/*
 	rm -f $(HEX_DIR)/*
 	rm -f sim.vvp
-
+	rm -rf obj_dir
 
 .SECONDARY:

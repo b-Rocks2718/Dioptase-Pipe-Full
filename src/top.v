@@ -5,14 +5,18 @@ module dioptase(
     input clk
 `endif
 );
+    
     reg [1023:0] vcdfile;
     initial begin
       if ($value$plusargs("vcd=%s", vcdfile)) begin
         $dumpfile(vcdfile);
+        $dumpvars(0, dioptase);
       end else begin
         $dumpfile("cpu.vcd");
+        `ifndef VERILATOR
+          $dumpvars(0, dioptase);
+        `endif
       end
-      $dumpvars(0, dioptase);
     end
 
     `ifndef VERILATOR
