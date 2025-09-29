@@ -5,7 +5,7 @@ module clock(output clk);
 
     assign clk = theClock;
 
-`ifndef VERILATOR
+`ifdef SIMULATION
     // For Icarus: internal free-running clock
     always begin
         #500 theClock = !theClock;  // 100 MHz

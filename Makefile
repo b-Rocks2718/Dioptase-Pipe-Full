@@ -13,7 +13,7 @@ VVP          := vvp
 
 # All test sources
 VERILOG_SRCS   := $(wildcard $(SRC_DIR)/*.v)
-VERILATOR_SRCS := src/cpu.v src/fetch.v src/decode.v src/execute.v src/regfile.v src/ALU.v src/memory.v src/mem.v src/writeback.v src/counter.v src/tlb.v src/top.v sim_main.cpp
+VERILATOR_SRCS := src/cpu.v src/fetch.v src/decode.v src/execute.v src/regfile.v src/ALU.v src/uart.v src/ps2.v src/vga.v src/memory.v src/mem.v src/writeback.v src/counter.v src/tlb.v src/top.v sim_main.cpp
 
 CPU_TESTS_SRCS   := $(wildcard $(CPU_TESTS_DIR)/*.s)
 # some emu tests run forever and use i/o
@@ -38,7 +38,7 @@ verilator: $(VERILATOR_SRCS)
 
 # Compile Verilog into sim.vvp once
 sim.vvp: $(wildcard $(SRC_DIR)/*.v)
-	$(IVERILOG) -o sim.vvp $^
+	$(IVERILOG) -DSIMULATION -o sim.vvp $^
 
 $(OUT_DIR)/%.vcd: $(HEX_DIR)/%.hex sim.vvp | dirs
 	$(VVP) sim.vvp +hex=$< +vcd=$@
@@ -70,7 +70,7 @@ test: $(ASM_SRCS) $(VERILOG_SRCS) | dirs
 	YELLOW="\033[0;33m"; \
 	NC="\033[0m"; \
 	passed=0; total=$(TOTAL); \
-	$(IVERILOG) -o sim.vvp $(wildcard $(SRC_DIR)/*.v) ; \
+	$(IVERILOG) -DSIMULATION -o sim.vvp $(wildcard $(SRC_DIR)/*.v) ; \
 	echo "Running $(words $(EMU_TESTS_SRCS)) instruction tests:"; \
 	for t in $(basename $(notdir $(EMU_TESTS_SRCS))); do \
 	  printf "%s %-20s " '-' "$$t"; \
@@ -108,7 +108,7 @@ test_verilator: $(ASM_SRCS) $(VERILOG_SRCS) | dirs
 	YELLOW="\033[0;33m"; \
 	NC="\033[0m"; \
 	passed=0; total=$(TOTAL); \
-	verilator --cc --exe --build src/cpu.v src/fetch.v src/decode.v src/execute.v src/regfile.v src/ALU.v src/memory.v src/mem.v src/writeback.v src/counter.v src/tlb.v src/top.v sim_main.cpp -o dioptase; \
+	verilator --cc --exe --build $(VERILATOR_SRCS) -o dioptase; \
 	echo "Running $(words $(EMU_TESTS_SRCS)) instruction tests:"; \
 	for t in $(basename $(notdir $(EMU_TESTS_SRCS))); do \
 	  printf "%s %-20s " '-' "$$t"; \
@@ -144,5 +144,6 @@ clean:
 	rm -f $(HEX_DIR)/*
 	rm -f sim.vvp
 	rm -rf obj_dir
+	rm -f cpu.vcd
 
 .SECONDARY:

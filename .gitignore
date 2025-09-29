@@ -4,4 +4,5 @@
 *.hex
 *.vcd
 *.vvp
+*.bit
 obj_dir/
