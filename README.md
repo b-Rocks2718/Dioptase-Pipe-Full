@@ -11,6 +11,8 @@ Pipeline implementation of [Dioptase-Emulator-Full](https://github.com/b-Rocks27
 - mem
 - writeback
 
+The I/O verilog for this project build off the code written by [Paul Bailey](https://github.com/PaulBailey-1) for the [JPEB project](https://github.com/PaulBailey-1/JPEB)
+
 ## Usage
 
 Use `make all` or `make sim.vvp` to build the project.
