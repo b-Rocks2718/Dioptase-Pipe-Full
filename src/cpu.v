@@ -9,6 +9,8 @@ module pipelined_cpu(
   output reg clk_en
 );
 
+    // TODO: handle sleep correctly
+
     wire [31:0]clock_divider;
     reg [31:0]clk_count = 32'b0;
 

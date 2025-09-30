@@ -107,7 +107,12 @@ module dioptase(
     mem mem(.clk(clk), .clk_en(clk_en),
         .raddr0(mem_read0_addr), .rdata0(mem_read0_data),
         .raddr1(mem_read1_addr), .rdata1(mem_read1_data),
-        .wen(mem_write_en), .waddr(mem_write_addr), .wdata(mem_write_data)
+        .wen(mem_write_en), .waddr(mem_write_addr), .wdata(mem_write_data),
+        .ps2_ren(ps2_ren),
+        .ps2_data_in(ps2_data_out),
+        .pixel_x_in(pixel_addr_x), .pixel_y_in(pixel_addr_y), .pixel(display_pixel),
+        .uart_tx_data(uart_tx_data), .uart_tx_wen(uart_tx_en),
+        .uart_rx_data(uart_rx_data), .uart_rx_ren(uart_rx_en)
     );
 
 endmodule
