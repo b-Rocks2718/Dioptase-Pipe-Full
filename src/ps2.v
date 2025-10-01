@@ -22,14 +22,27 @@ module ps2(input ps2_clk, input ps2_data, input clk, input ren, output [15:0]dat
     );
 
     reg [15:0]keyboard_reg = 0;
+    reg break_pending = 0;
+    reg extended_pending = 0;
     assign data = keyboard_reg;
     wire [7:0]ascii = scan_decode[scan_code[7:0]];
+    wire ascii_valid = (ascii != 8'h00);
 
     always @(posedge clk) begin
         if (ren) begin
             keyboard_reg <= 0;
         end else if (ready_flag) begin
-            keyboard_reg <= {scan_code[15:8], ascii};
+            if (scan_code[7:0] == 8'hF0) begin
+                break_pending <= 1;
+            end else if (scan_code[7:0] == 8'hE0) begin
+                extended_pending <= 1;
+            end else begin
+                if (!break_pending && ascii_valid) begin
+                    keyboard_reg <= {8'h00, ascii};
+                end
+                break_pending <= 0;
+                extended_pending <= 0;
+            end
         end
     end
 
@@ -51,18 +64,6 @@ module PS2Receiver(
     reg [7:0]dataprev=0;
     reg [3:0]cnt=0;
     reg flag=0;
-
-    // // Testing
-    // reg [11:0]counter = 0;
-    // always @(posedge clk ) begin
-    //     counter <= counter + 1;
-    //     if (counter == 12'hfff) begin
-    //         keycode <= 16'h001C;
-    //         oflag <= 1;
-    //     end else begin
-    //         oflag <= 0;
-    //     end
-    // end
     
     debouncer #(
         .COUNT_MAX(19),
@@ -96,8 +97,8 @@ module PS2Receiver(
         10:flag<=1'b0;
         
         endcase
-            if(cnt<=9) cnt<=cnt+1;
-            else if(cnt==10) cnt<=0;
+        if(cnt<=9) cnt<=cnt+1;
+        else if(cnt==10) cnt<=0;
     end
 
     reg pflag;
@@ -107,7 +108,7 @@ module PS2Receiver(
             oflag <= 1'b1;
             dataprev <= datacur;
         end else
-            oflag <= 'b0;
+            oflag <= 1'b0;
         pflag <= flag;
     end
 

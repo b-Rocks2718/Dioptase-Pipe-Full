@@ -53,9 +53,22 @@ module mem(input clk, input clk_en,
     reg [15:0]vscroll_reg = 0;
     reg [15:0]hscroll_reg = 0;
 
+    function [7:0] select_lane_byte;
+        input [31:0] data;
+        input [1:0] lane;
+        begin
+            case (lane)
+                2'd0: select_lane_byte = data[7:0];
+                2'd1: select_lane_byte = data[15:8];
+                2'd2: select_lane_byte = data[23:16];
+                default: select_lane_byte = data[31:24];
+            endcase
+        end
+    endfunction
+
 
     assign ps2_ren = raddr1_buf == PS2_REG;
-    assign uart_tx_wen = (waddr_buf == UART_TX_REG) && wen_buf[0];
+    assign uart_tx_wen = (waddr_buf[17:2] == UART_TX_REG[17:2]) && wen_buf[waddr_buf[1:0]];
     assign uart_rx_ren = raddr1_buf == UART_RX_REG;
 
     reg [31:0]display_framebuffer_out;
@@ -84,7 +97,7 @@ module mem(input clk, input clk_en,
                             raddr0_buf == SCALE_REG ? {24'b0, scale_reg} :
                             raddr0_buf == HSCROLL_REG ? {16'b0, hscroll_reg} :
                             raddr0_buf == VSCROLL_REG ?{16'b0, vscroll_reg} :
-                            raddr0_buf == PS2_REG ? {16'b0, ps2_data_in} :
+                            raddr0_buf == PS2_REG ? {24'b0, ps2_data_in[7:0]} :
                             raddr0_buf == UART_RX_REG ? {24'b0, uart_rx_data} :
                             32'h0;
     wire [31:0]data1_out =  raddr1_buf < PS2_REG ? ram_data1_out :
@@ -93,7 +106,7 @@ module mem(input clk, input clk_en,
                             raddr1_buf == SCALE_REG ? {24'b0, scale_reg} :
                             raddr1_buf == HSCROLL_REG ? {16'b0, hscroll_reg} :
                             raddr1_buf == VSCROLL_REG ? {16'b0, vscroll_reg} :
-                            raddr1_buf == PS2_REG ? {16'b0, ps2_data_in} :
+                            raddr1_buf == PS2_REG ? {24'b0, ps2_data_in[7:0]} :
                             raddr1_buf == UART_RX_REG ? {24'b0, uart_rx_data} :
                             32'h0;
 
@@ -147,8 +160,13 @@ module mem(input clk, input clk_en,
             if (wen[0]) vscroll_reg[7:0] <= wdata[7:0];
             if (wen[1]) vscroll_reg[15:8] <= wdata[15:8];
         end
-          if (waddr == UART_TX_REG && wen[0]) begin
-            uart_tx_data <= wdata[7:0];
+        if ((waddr[17:2] == UART_TX_REG[17:2]) && wen[waddr[1:0]]) begin
+            uart_tx_data <= select_lane_byte(wdata, waddr[1:0]);
+`ifdef SIMULATION
+            $display("uart write: waddr=%h wen=%b lane=%0d wdata=%h byte=%02h", waddr, wen, waddr[1:0], wdata, select_lane_byte(wdata, waddr[1:0]));
+            $write("%c", select_lane_byte(wdata, waddr[1:0]));
+            $fflush();
+`endif
         end
       end
     end
