@@ -1,6 +1,6 @@
 `timescale 1ps/1ps
 
-module ALU(input clk,
+module ALU(input clk, input clk_en,
     input [4:0]op, input [4:0]alu_op, input [31:0]s_1, input [31:0]s_2, 
     input bubble, input [31:0]flags_restore, input flags_we,
     output [31:0]result, output reg [3:0]flags);
@@ -97,7 +97,7 @@ module ALU(input clk,
   assign o = (result[31] != s_2_for_o[31]) & (s_2_for_o[31] == s_1[31]);
 
   always @(posedge clk) begin
-    if (!bubble) begin
+    if (!bubble && clk_en) begin
       flags <= flags_we ? flags_restore[3:0] : {o, s, zero, c};
     end
   end

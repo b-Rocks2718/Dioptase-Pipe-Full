@@ -1,4 +1,4 @@
-module pit(input clk, 
+module pit(input clk, input clk_en,
   input we, input [31:0]wdata,
   output reg interrupt);
 
@@ -6,7 +6,7 @@ module pit(input clk,
   reg [31:0]limit;
 
   always @(posedge clk) begin
-    if (we) limit <= wdata;
+    if (we && clk_en) limit <= wdata;
 
     if (count >= limit) begin
       count <= 32'd0;

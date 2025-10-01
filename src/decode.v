@@ -113,14 +113,14 @@ module decode(input clk, input clk_en,
   // only alu-reg instructions use r_c as a source
   wire [4:0]s_2 = (is_store || is_priv) ? r_a : ((opcode == 5'd0) ? r_c : 5'd0);
 
-  regfile regfile(clk,
+  regfile regfile(clk, clk_en,
         s_1, d_1,
         s_2, d_2,
         we1, target_1, write_data_1,
         we2, target_2, write_data_2,
         stall, ret_val);
         
-  cregfile cregfile(clk,
+  cregfile cregfile(clk, clk_en,
         r_b, cr_d,
         cr_we, target_1, write_data_1,
         stall, exc_in_wb, tlb_exc_in_wb,

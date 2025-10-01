@@ -56,7 +56,7 @@ module dioptase(
     wire [31:0]cpu_pc;
     wire [3:0]flags;
 
-    wire [15:0]interrupts = 0;
+    wire [15:0]interrupts;
 
     pipelined_cpu cpu(
         clk, interrupts,
@@ -112,7 +112,8 @@ module dioptase(
         .ps2_data_in(ps2_data_out),
         .pixel_x_in(pixel_addr_x), .pixel_y_in(pixel_addr_y), .pixel(display_pixel),
         .uart_tx_data(uart_tx_data), .uart_tx_wen(uart_tx_en),
-        .uart_rx_data(uart_rx_data), .uart_rx_ren(uart_rx_en)
+        .uart_rx_data(uart_rx_data), .uart_rx_ren(uart_rx_en),
+        .interrupts(interrupts)
     );
 
 endmodule

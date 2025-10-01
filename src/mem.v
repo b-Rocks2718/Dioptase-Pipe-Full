@@ -7,7 +7,8 @@ module mem(input clk, input clk_en,
     output ps2_ren, input [15:0]ps2_data_in,
     input [9:0]pixel_x_in, input [9:0]pixel_y_in, output [11:0]pixel,
     output reg [7:0]uart_tx_data, output uart_tx_wen,
-    input [7:0]uart_rx_data, output uart_rx_ren
+    input [7:0]uart_rx_data, output uart_rx_ren,
+    output [15:0]interrupts
 );
 
     localparam PS2_REG = 18'h20000;

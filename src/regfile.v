@@ -1,6 +1,6 @@
 `timescale 1ps/1ps
 
-module regfile(input clk,
+module regfile(input clk, input clk_en,
     input [4:0]raddr0, output reg [31:0]rdata0,
     input [4:0]raddr1, output reg [31:0]rdata1,
     input wen0, input [4:0]waddr0, input [31:0]wdata0, 
@@ -31,7 +31,7 @@ module regfile(input clk,
 
 endmodule
 
-module cregfile(input clk,
+module cregfile(input clk, input clk_en,
     input [4:0]raddr0, output reg [31:0]rdata0,
     input wen0, input [4:0]waddr0, input [31:0]wdata0,
     input stall, input exc_in_wb, input tlb_exc_in_wb, input [31:0]tlb_addr,
@@ -64,11 +64,11 @@ module cregfile(input clk,
   wire [31:0]psr = cregfile[0];
 
   always @(posedge clk) begin
-    if (wen0) begin
+    if (wen0 && clk_en) begin
       cregfile[waddr0[2:0]] <= wdata0;
     end
 
-    if (!stall) begin
+    if (!stall && clk_en) begin
       if (!exc_in_wb && !rfe_in_wb) begin
         rdata0 <= (raddr0 == 0) ? 32'b0 : cregfile[raddr0[2:0]];
       end else if (exc_in_wb) begin
@@ -93,11 +93,10 @@ module cregfile(input clk,
         // decrement state
         cregfile[0] <= cregfile[0] - 32'h1;
       end
-
-      // interrupt reg
-      cregfile[2] <= cregfile[2] | {16'b0, interrupts};
-
     end
+
+    // interrupt reg
+    cregfile[2] <= cregfile[2] | {16'b0, interrupts};
 
   end
 

@@ -223,7 +223,7 @@ module execute(input clk, input clk_en, input halt,
     32'h0;
 
   wire [31:0]alu_rslt;
-  ALU ALU(clk, opcode, alu_op, lhs, rhs, bubble_in, 
+  ALU ALU(clk, clk_en, opcode, alu_op, lhs, rhs, bubble_in, 
     flags_restore, rfe_in_wb,
     alu_rslt, flags);
 
