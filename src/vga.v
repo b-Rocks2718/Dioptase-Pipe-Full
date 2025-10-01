@@ -14,11 +14,13 @@ module vga(
     localparam H_FRONTPORCH = 16;
     localparam H_SYNC = 96;
     localparam H_BACKPORCH = 48;
+    localparam H_TOTAL = H_ACTIVE + H_FRONTPORCH + H_SYNC + H_BACKPORCH;
 
     localparam V_ACTIVE = 480;
     localparam V_FRONTPORCH = 10;
     localparam V_SYNC = 2;
     localparam V_BACKPORCH = 32;
+    localparam V_TOTAL = V_ACTIVE + V_FRONTPORCH + V_SYNC + V_BACKPORCH;
 
     reg h_sync = 0;
     reg v_sync = 0;
@@ -43,9 +45,9 @@ module vga(
     end
 
     always @(posedge pixel_clk) begin
-        if (h_counter == H_ACTIVE + H_FRONTPORCH + H_SYNC + H_BACKPORCH) begin
+        if (h_counter == H_TOTAL - 1) begin
             h_counter_buff <= 0;
-            if (v_counter == V_ACTIVE + V_FRONTPORCH + V_SYNC + V_BACKPORCH) begin
+            if (v_counter == V_TOTAL - 1) begin
                 v_counter_buff <= 0;
             end else
                 v_counter_buff <= v_counter + 1;
