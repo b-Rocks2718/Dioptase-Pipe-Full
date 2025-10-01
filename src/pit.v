@@ -1,3 +1,5 @@
+`timescale 1ps/1ps
+
 module pit(input clk, input clk_en,
   input we, input [31:0]wdata,
   output reg interrupt);

@@ -13,7 +13,8 @@ VVP          := vvp
 
 # All test sources
 VERILOG_SRCS   := $(wildcard $(SRC_DIR)/*.v)
-VERILATOR_SRCS := src/dioptase.v src/fetch.v src/decode.v src/execute.v src/regfile.v src/ALU.v src/uart.v src/ps2.v src/vga.v src/memory.v src/mem.v src/writeback.v src/counter.v src/tlb.v src/cpu.v extern/vgasim/bench/cpp/vgasim.cpp sim_main.cpp
+VERILATOR_EXCLUDE := $(SRC_DIR)/clock.v $(SRC_DIR)/dioptase.v
+VERILATOR_SRCS := $(SRC_DIR)/dioptase.v $(filter-out $(VERILATOR_EXCLUDE), $(VERILOG_SRCS)) extern/vgasim/bench/cpp/vgasim.cpp sim_main.cpp
 GTKMM_CFLAGS   := $(shell pkg-config --cflags gtkmm-3.0)
 GTKMM_LIBS		 := $(shell pkg-config --libs gtkmm-3.0)
 

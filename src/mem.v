@@ -113,7 +113,14 @@ module mem(input clk, input clk_en,
                             raddr1_buf == UART_RX_REG ? {24'b0, uart_rx_data} :
                             32'h0;
 
-    //pit pit(clk, )
+    wire pit_interrupt;
+    // ignore partial writes to counter address
+    wire pit_we = wen[0] && wen[1] && wen[2] && wen[3] && waddr == PIT_START;
+
+    pit pit(clk, clk_en,
+        pit_we, wdata, pit_interrupt);
+
+    assign interrupts = {15'd0, pit_interrupt};
 
     always @(posedge clk) begin
       display_framebuffer_out <= frame_buffer[display_frame_addr[13:2]];
