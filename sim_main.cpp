@@ -121,7 +121,7 @@ public:
         if (++phase_counter_ >= half_period_ticks_) {
             phase_counter_ = 0;
             clk_high_ = !clk_high_;
-            if (!clk_high_) {
+            if (clk_high_) {
                 ++bit_index_;
                 if (bit_index_ >= frame_bits_) {
                     sending_ = false;

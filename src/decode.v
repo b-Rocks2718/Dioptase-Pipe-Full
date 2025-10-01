@@ -30,7 +30,7 @@ module decode(input clk, input clk_en,
     output reg is_load_out, output reg is_store_out, output reg is_branch_out,
     output reg is_post_inc_out, output reg tgts_cr_out,
     output reg [4:0]priv_type_out, output reg [1:0]crmov_mode_type_out,
-    output reg tlb_we, output reg tlbc 
+    output reg tlb_we, output reg tlbc, output [31:0]interrupt_state
   );
 
   reg was_stall;
@@ -119,9 +119,7 @@ module decode(input clk, input clk_en,
         we1, target_1, write_data_1,
         we2, target_2, write_data_2,
         stall, ret_val);
-
-  wire [31:0]interrupt_state;
-
+        
   cregfile cregfile(clk,
         r_b, cr_d,
         cr_we, target_1, write_data_1,

@@ -14,6 +14,8 @@ module pipelined_cpu(
     wire [31:0]clock_divider;
     reg [31:0]clk_count = 32'b0;
 
+    wire [31:0]interrupt_state;
+
     initial begin
       clk_en = 1;
     end
@@ -161,7 +163,7 @@ module pipelined_cpu(
       decode_is_load_out, decode_is_store_out, decode_is_branch_out,
       decode_is_post_inc_out, decode_tgts_cr_out, 
       decode_priv_type_out, decode_crmov_mode_type_out,
-      decode_tlb_we_out, decode_tlbc_out);
+      decode_tlb_we_out, decode_tlbc_out, interrupt_state);
 
     wire exec_bubble_out;
     wire [31:0]mem_result_out_1;
@@ -261,7 +263,7 @@ module pipelined_cpu(
     always @(posedge clk) begin
       if (clk_en) begin
         halt <= halt ? 1 : wb_halt;
-        sleep <= sleep ? (interrupts == 16'b0) : wb_sleep;
+        sleep <= sleep ? (interrupt_state == 32'b0) : wb_sleep;
       end
 
       if (clk_count >= clock_divider) begin

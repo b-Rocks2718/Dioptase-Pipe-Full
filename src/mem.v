@@ -10,15 +10,17 @@ module mem(input clk, input clk_en,
     input [7:0]uart_rx_data, output uart_rx_ren
 );
 
-    localparam TILEMAP_START = 18'h2a000;
-    localparam FRAMEBUFFER_START = 18'h2e000;
-    localparam FRAMEBUFFER_END = 18'h2f2c0;
     localparam PS2_REG = 18'h20000;
     localparam VSCROLL_REG = 18'h2fffc;
     localparam HSCROLL_REG = 18'h2fffe;
     localparam SCALE_REG = 18'h2fffb;
     localparam UART_TX_REG = 18'h20002;
     localparam UART_RX_REG = 18'h20003;
+    localparam PIT_START = 18'h20004;
+
+    localparam TILEMAP_START = 18'h2a000;
+    localparam FRAMEBUFFER_START = 18'h2e000;
+    localparam FRAMEBUFFER_END = 18'h2f2c0;
 
     // we got 1800Kb total on the Basys 3
     (* ram_style = "block" *) reg [31:0]ram[0:16'h7fff]; // 1049Kb (0x0000-0x7FFF)
@@ -110,7 +112,16 @@ module mem(input clk, input clk_en,
                             raddr1_buf == UART_RX_REG ? {24'b0, uart_rx_data} :
                             32'h0;
 
+    //pit pit(clk, )
+
     always @(posedge clk) begin
+      display_framebuffer_out <= frame_buffer[display_frame_addr[13:2]];
+      display_tile_index <= display_frame_addr[1:0];
+      display_pixel_x <= pixel_x;
+      display_pixel_y <= pixel_y;
+      display_tilemap_out <= tile_map[pixel_idx[13:1]];
+      pixel_index <= pixel_idx[0];
+
       if (clk_en) begin
         raddr0_buf <= raddr0;
         raddr1_buf <= raddr1;
@@ -125,13 +136,6 @@ module mem(input clk, input clk_en,
 
         rdata0 <= data0_out;
         rdata1 <= data1_out;
-
-        display_framebuffer_out <= frame_buffer[display_frame_addr[13:2]];
-        display_tile_index <= display_frame_addr[1:0];
-        display_pixel_x <= pixel_x;
-        display_pixel_y <= pixel_y;
-        display_tilemap_out <= tile_map[pixel_idx[13:1]];
-        pixel_index <= pixel_idx[0];
 
         if (waddr < PS2_REG) begin
             if (wen[0]) ram[waddr[16:2]][7:0]   <= wdata[7:0];
@@ -162,11 +166,6 @@ module mem(input clk, input clk_en,
         end
         if ((waddr[17:2] == UART_TX_REG[17:2]) && wen[waddr[1:0]]) begin
             uart_tx_data <= select_lane_byte(wdata, waddr[1:0]);
-`ifdef SIMULATION
-            $display("uart write: waddr=%h wen=%b lane=%0d wdata=%h byte=%02h", waddr, wen, waddr[1:0], wdata, select_lane_byte(wdata, waddr[1:0]));
-            $write("%c", select_lane_byte(wdata, waddr[1:0]));
-            $fflush();
-`endif
         end
       end
     end
