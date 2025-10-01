@@ -57,6 +57,10 @@ module dioptase(
     wire [3:0]flags;
 
     wire [15:0]interrupts;
+    wire [15:0]mem_interrupts;
+    wire ps2_ready_flag;
+
+    assign interrupts = mem_interrupts | {14'b0, ps2_ready_flag, 1'b0};
 
     pipelined_cpu cpu(
         clk, interrupts,
@@ -69,7 +73,6 @@ module dioptase(
      // PS/2
     wire ps2_ren;
     wire [15:0]ps2_data_out;
-    wire ps2_ready_flag;
     ps2 ps2(.ps2_clk(ps2_clk), .ps2_data(ps2_data), .clk(clk), .ren(ps2_ren), .data(ps2_data_out), .ready(ps2_ready_flag));
 
     // VGA
@@ -113,7 +116,7 @@ module dioptase(
         .pixel_x_in(pixel_addr_x), .pixel_y_in(pixel_addr_y), .pixel(display_pixel),
         .uart_tx_data(uart_tx_data), .uart_tx_wen(uart_tx_en),
         .uart_rx_data(uart_rx_data), .uart_rx_ren(uart_rx_en),
-        .interrupts(interrupts)
+        .interrupts(mem_interrupts)
     );
 
 endmodule

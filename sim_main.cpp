@@ -329,7 +329,8 @@ private:
 
 class SimPeripherals {
 public:
-    SimPeripherals() : keyboard_(guard_) {}
+    SimPeripherals()
+        : keyboard_(guard_), pit_debug_(std::getenv("PIT_DEBUG") != nullptr) {}
 
     void attach(Vdioptase &top) {
         ps2_.reset(top);
@@ -344,6 +345,22 @@ public:
 
     void after_posedge(Vdioptase &top) {
         uart_.after_posedge(top);
+        if (pit_debug_) {
+            const bool pit_irq = top.dioptase__DOT__mem__DOT__pit_interrupt;
+            if (pit_irq && !pit_irq_prev_) {
+                const uint32_t color = top.dioptase__DOT__mem__DOT__ram[355];
+                const uint32_t tile0 = top.dioptase__DOT__mem__DOT__tile_map[32];
+                const uint32_t tile1 = top.dioptase__DOT__mem__DOT__tile_map[33];
+                std::cerr << "[pit] interrupt at cycle " << total_cycles_
+                          << ", color=0x" << std::hex << std::setw(8)
+                          << std::setfill('0') << color
+                          << " tile[32]=0x" << std::setw(8) << tile0
+                          << " tile[33]=0x" << std::setw(8) << tile1
+                          << std::dec << std::setfill(' ') << std::endl;
+            }
+            pit_irq_prev_ = pit_irq;
+        }
+        ++total_cycles_;
         ps2_.tick(top);
     }
 
@@ -354,6 +371,9 @@ private:
     Ps2Transmitter ps2_;
     KeyboardInput keyboard_;
     UartConsole uart_;
+    bool pit_debug_ = false;
+    bool pit_irq_prev_ = false;
+    uint64_t total_cycles_ = 0;
 };
 
 Options parse_options(int argc, char **argv, std::vector<std::string> &verilator_args) {

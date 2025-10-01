@@ -63,6 +63,8 @@ module cregfile(input clk, input clk_en,
 
   wire [31:0]psr = cregfile[0];
 
+  wire [31:0]next_isr = cregfile[2] | {16'b0, interrupts};
+
   always @(posedge clk) begin
     if (wen0 && clk_en) begin
       cregfile[waddr0[2:0]] <= wdata0;
@@ -96,7 +98,10 @@ module cregfile(input clk, input clk_en,
     end
 
     // interrupt reg
-    cregfile[2] <= cregfile[2] | {16'b0, interrupts};
+    if (wen0 && clk_en && waddr0[2:0] == 3'd2)
+        cregfile[2] <= (wdata0 | {16'b0, interrupts});
+    else
+        cregfile[2] <= next_isr;
 
   end
 
