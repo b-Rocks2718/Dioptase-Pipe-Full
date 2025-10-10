@@ -31,6 +31,7 @@ struct Options {
     bool use_vga = false;
     bool max_cycles_overridden = false;
     uint64_t max_cycles = 500;
+    bool keyboard_via_uart = false;
 };
 
 class TerminalRawGuard {
@@ -175,19 +176,107 @@ private:
     int idle_ticks_remaining_ = 0;
 };
 
+enum class KeyboardRoute {
+    Ps2,
+    Uart
+};
+
+class UartStimulus {
+public:
+    UartStimulus() : debug_(std::getenv("UART_DEBUG") != nullptr) {}
+
+    void reset(Vdioptase &top) {
+        pending_bytes_.clear();
+        sending_ = false;
+        bit_index_ = 0;
+        ticks_in_bit_ = 0;
+        line_state_ = true;
+        current_frame_.fill(1);
+        top.uart_rx = 1;
+    }
+
+    void enqueue_byte(uint8_t value) {
+        pending_bytes_.push_back(value);
+        if (debug_) {
+            std::cerr << "[uart] schedule rx 0x" << std::hex << std::setw(2) << std::setfill('0')
+                      << static_cast<int>(value) << std::dec << std::setfill(' ')
+                      << " ('" << (std::isprint(value) ? static_cast<char>(value) : '?')
+                      << "')" << std::endl;
+        }
+    }
+
+    void tick(Vdioptase &top) {
+        if (!sending_) {
+            if (!pending_bytes_.empty()) {
+                begin_frame(pending_bytes_.front());
+                pending_bytes_.pop_front();
+            } else {
+                line_state_ = true;
+                top.uart_rx = 1;
+                return;
+            }
+        }
+
+        top.uart_rx = line_state_ ? 1 : 0;
+
+        if (++ticks_in_bit_ >= ticks_per_bit_) {
+            ticks_in_bit_ = 0;
+            ++bit_index_;
+            if (bit_index_ >= frame_bits_) {
+                sending_ = false;
+                bit_index_ = 0;
+                line_state_ = true;
+                if (debug_) {
+                    std::cerr << "[uart] frame complete" << std::endl;
+                }
+            } else {
+                line_state_ = current_frame_[bit_index_] != 0;
+            }
+        }
+    }
+
+private:
+    void begin_frame(uint8_t value) {
+        current_frame_[0] = 0;
+        for (int i = 0; i < 8; ++i) {
+            current_frame_[1 + i] = static_cast<uint8_t>((value >> i) & 0x1);
+        }
+        current_frame_[9] = 1;
+
+        sending_ = true;
+        bit_index_ = 0;
+        ticks_in_bit_ = 0;
+        line_state_ = current_frame_[0] != 0;
+    }
+
+    static constexpr int frame_bits_ = 10;
+    static constexpr int ticks_per_bit_ = 10416;
+
+    std::array<uint8_t, frame_bits_> current_frame_ {};
+    std::deque<uint8_t> pending_bytes_;
+    int bit_index_ = 0;
+    int ticks_in_bit_ = 0;
+    bool sending_ = false;
+    bool line_state_ = true;
+    bool debug_ = false;
+};
+
 class KeyboardInput {
 public:
-    explicit KeyboardInput(TerminalRawGuard &guard)
-        : guard_(guard), debug_(std::getenv("PS2_DEBUG") != nullptr) {}
+    KeyboardInput(TerminalRawGuard &guard, Ps2Transmitter &ps2, UartStimulus &uart,
+                  KeyboardRoute &route)
+        : guard_(guard), ps2_(ps2), uart_(uart), route_(route),
+          ps2_debug_(std::getenv("PS2_DEBUG") != nullptr),
+          uart_debug_(std::getenv("UART_DEBUG") != nullptr) {}
 
-    void poll(Ps2Transmitter &tx) {
+    void poll() {
         if (!guard_.active()) {
             while (std::cin.good() && std::cin.rdbuf()->in_avail() > 0) {
                 const char ch = static_cast<char>(std::cin.get());
                 if (!std::cin.good()) {
                     break;
                 }
-                emit_character(ch, tx);
+                emit_character(ch);
             }
             return;
         }
@@ -206,13 +295,21 @@ public:
             }
 
             for (ssize_t idx = 0; idx < read_bytes; ++idx) {
-                emit_character(buffer[idx], tx);
+                emit_character(buffer[idx]);
             }
         }
     }
 
 private:
-    void emit_character(char ch, Ps2Transmitter &tx) {
+    void emit_character(char ch) {
+        if (route_ == KeyboardRoute::Ps2) {
+            emit_via_ps2(ch);
+        } else {
+            emit_via_uart(ch);
+        }
+    }
+
+    void emit_via_ps2(char ch) {
         const auto sequence = encode_character(ch);
         if (!sequence) {
             if (!warned_unknown_ && ch != '\r' && ch != '\n') {
@@ -228,13 +325,30 @@ private:
             return;
         }
 
-        tx.enqueue_sequence(*sequence);
-        if (debug_) {
+        ps2_.enqueue_sequence(*sequence);
+        if (ps2_debug_) {
             for (uint8_t value : *sequence) {
                 std::cerr << "[ps2] enqueue 0x" << std::hex << std::setw(2) << std::setfill('0')
                           << static_cast<int>(value) << std::dec << std::setfill(' ')
                           << " ('" << ch << "')" << std::endl;
             }
+        }
+    }
+
+    void emit_via_uart(char ch) {
+        unsigned char value = static_cast<unsigned char>(ch);
+        if (ch == '\r') {
+            value = static_cast<unsigned char>('\n');
+        }
+        if (value == 0x7F) {
+            value = static_cast<unsigned char>('\b');
+        }
+        uart_.enqueue_byte(value);
+        if (uart_debug_) {
+            std::cerr << "[uart] enqueue rx 0x" << std::hex << std::setw(2) << std::setfill('0')
+                      << static_cast<int>(value) << std::dec << std::setfill(' ')
+                      << " ('" << (std::isprint(value) ? static_cast<char>(value) : '?')
+                      << "')" << std::endl;
         }
     }
 
@@ -247,9 +361,13 @@ private:
     }
 
     TerminalRawGuard &guard_;
+    Ps2Transmitter &ps2_;
+    UartStimulus &uart_;
+    KeyboardRoute &route_;
     bool warned_unknown_ = false;
     bool reported_read_error_ = false;
-    bool debug_ = false;
+    bool ps2_debug_ = false;
+    bool uart_debug_ = false;
 
 private:
     static std::optional<uint8_t> lookup_scancode(char ch) {
@@ -329,22 +447,97 @@ private:
 
 class SimPeripherals {
 public:
-    SimPeripherals()
-        : keyboard_(guard_), pit_debug_(std::getenv("PIT_DEBUG") != nullptr) {}
+    explicit SimPeripherals(bool keyboard_via_uart)
+        : keyboard_route_(keyboard_via_uart ? KeyboardRoute::Uart : KeyboardRoute::Ps2),
+          keyboard_(guard_, ps2_, uart_input_, keyboard_route_),
+          pit_debug_(std::getenv("PIT_DEBUG") != nullptr),
+          uart_debug_(std::getenv("UART_DEBUG") != nullptr) {
+        const char *boot = std::getenv("UART_BOOT");
+        if (boot != nullptr) {
+            while (*boot != '\0') {
+                initial_uart_bytes_.push_back(static_cast<uint8_t>(*boot));
+                ++boot;
+            }
+        }
+    }
 
     void attach(Vdioptase &top) {
         ps2_.reset(top);
-        top.uart_rx = 1;
+        uart_input_.reset(top);
+        for (uint8_t value : initial_uart_bytes_) {
+            uart_input_.enqueue_byte(value);
+        }
+        if (uart_debug_) {
+            prev_rx_count_ = static_cast<uint8_t>(top.dioptase__DOT__uart__DOT__rx_buf__DOT__count);
+        }
     }
 
     void before_cycle(Vdioptase &top) {
-        keyboard_.poll(ps2_);
-        top.uart_rx = 1;
+        keyboard_.poll();
+        uart_input_.tick(top);
         ps2_.tick(top);
     }
 
     void after_posedge(Vdioptase &top) {
         uart_.after_posedge(top);
+        if (uart_debug_) {
+            const uint32_t reg_r5_cur = top.dioptase__DOT__cpu__DOT__decode__DOT__regfile__DOT__regfile[5];
+            const uint8_t rx_count = static_cast<uint8_t>(top.dioptase__DOT__uart__DOT__rx_buf__DOT__count);
+            if (rx_count != prev_rx_count_) {
+                std::cerr << "[uart] rx fifo count " << static_cast<int>(prev_rx_count_)
+                          << " -> " << static_cast<int>(rx_count) << std::endl;
+                if (prev_rx_count_ == 0 && rx_count > 0) {
+                    const uint8_t sample = static_cast<uint8_t>(top.dioptase__DOT__uart__DOT__uart_rx__DOT__shift);
+                    std::cerr << "[uart] captured byte 0x" << std::hex << std::setw(2) << std::setfill('0')
+                              << static_cast<int>(sample) << std::dec << std::setfill(' ') << std::endl;
+                }
+                if (prev_rx_count_ > 0 && rx_count == 0) {
+                    const uint32_t raddr0 = top.dioptase__DOT__mem__DOT__raddr0_buf;
+                    const uint32_t raddr1 = top.dioptase__DOT__mem__DOT__raddr1_buf;
+                    const uint32_t rdata0 = top.dioptase__DOT__mem_read0_data;
+                    const uint32_t rdata1 = top.dioptase__DOT__mem_read1_data;
+                    const uint32_t wdata1 = top.dioptase__DOT__cpu__DOT__reg_write_data_1;
+                    const uint32_t mem_stage_res = top.dioptase__DOT__cpu__DOT__mem_result_out_1;
+                    const uint8_t mem_is_load = top.dioptase__DOT__cpu__DOT__mem_is_load_out;
+                    const uint8_t exec_is_load = top.dioptase__DOT__cpu__DOT__exec_is_load_out;
+                    const uint32_t wb_res = top.dioptase__DOT__cpu__DOT__wb_result_out_1;
+                    const uint32_t masked_mem = top.dioptase__DOT__cpu__DOT__writeback__DOT__masked_mem_result;
+                    const uint8_t mem_opcode = static_cast<uint8_t>(top.dioptase__DOT__cpu__DOT__mem_opcode_out);
+                    std::cerr << "[uart] r5 now 0x" << std::hex << std::setw(8) << std::setfill('0')
+                              << reg_r5_cur << " raddr0=0x" << std::setw(5) << raddr0
+                              << " raddr1=0x" << std::setw(5) << raddr1
+                              << " rdata0=0x" << std::setw(8) << rdata0
+                              << " rdata1=0x" << std::setw(8) << rdata1
+                              << " mem_stage=0x" << std::setw(8) << mem_stage_res
+                              << " reg_wdata1=0x" << std::setw(8) << wdata1
+                              << " exec_is_load=" << static_cast<int>(exec_is_load)
+                              << " mem_is_load=" << static_cast<int>(mem_is_load)
+                              << " mem_opcode=" << static_cast<int>(mem_opcode)
+                              << " wb_result=0x" << std::setw(8) << wb_res
+                              << " masked_mem=0x" << std::setw(8) << masked_mem
+                              << std::dec << std::setfill(' ') << std::endl;
+                }
+                prev_rx_count_ = rx_count;
+            }
+            const uint8_t tx_count = static_cast<uint8_t>(top.dioptase__DOT__uart__DOT__tx_buf__DOT__count);
+            if (tx_count != prev_tx_count_) {
+                std::cerr << "[uart] tx fifo count " << static_cast<int>(prev_tx_count_)
+                          << " -> " << static_cast<int>(tx_count) << std::endl;
+                prev_tx_count_ = tx_count;
+            }
+            if (top.dioptase__DOT__uart_tx_en) {
+                const uint8_t byte = static_cast<uint8_t>(top.dioptase__DOT__uart_tx_data);
+                const uint32_t addr = static_cast<uint32_t>(top.dioptase__DOT__mem__DOT__waddr_buf << 2);
+                std::cerr << "[uart] tx_en byte=0x" << std::hex << std::setw(2) << std::setfill('0')
+                          << static_cast<int>(byte) << " addr=0x" << std::setw(8)
+                          << addr << std::dec << std::setfill(' ') << std::endl;
+            }
+            if (reg_r5_cur != prev_r5_) {
+                std::cerr << "[uart] reg r5 change -> 0x" << std::hex << std::setw(8) << std::setfill('0')
+                          << reg_r5_cur << std::dec << std::setfill(' ') << std::endl;
+                prev_r5_ = reg_r5_cur;
+            }
+        }
         if (pit_debug_) {
             const bool pit_irq = top.dioptase__DOT__mem__DOT__pit_interrupt;
             if (pit_irq && !pit_irq_prev_) {
@@ -367,13 +560,20 @@ public:
     void after_cycle() {}
 
 private:
+    KeyboardRoute keyboard_route_;
     TerminalRawGuard guard_;
     Ps2Transmitter ps2_;
+    UartStimulus uart_input_;
     KeyboardInput keyboard_;
     UartConsole uart_;
     bool pit_debug_ = false;
     bool pit_irq_prev_ = false;
     uint64_t total_cycles_ = 0;
+    std::vector<uint8_t> initial_uart_bytes_;
+    bool uart_debug_ = false;
+    uint8_t prev_rx_count_ = 0;
+    uint8_t prev_tx_count_ = 0;
+    uint32_t prev_r5_ = 0;
 };
 
 Options parse_options(int argc, char **argv, std::vector<std::string> &verilator_args) {
@@ -387,6 +587,10 @@ Options parse_options(int argc, char **argv, std::vector<std::string> &verilator
         std::string arg(argv[i]);
         if (arg == "--vga" || arg == "--gui") {
             opts.use_vga = true;
+            continue;
+        }
+        if (arg == "--uart-input") {
+            opts.keyboard_via_uart = true;
             continue;
         }
         if (arg.rfind(max_cycles_prefix, 0) == 0) {
@@ -412,8 +616,8 @@ Options parse_options(int argc, char **argv, std::vector<std::string> &verilator
 
 class DioptaseSim {
 public:
-    DioptaseSim(Vdioptase &top, VGAWIN &window, uint64_t max_cycles)
-        : top_(top), window_(window), max_cycles_(max_cycles) {
+    DioptaseSim(Vdioptase &top, VGAWIN &window, uint64_t max_cycles, bool keyboard_via_uart)
+        : top_(top), window_(window), peripherals_(keyboard_via_uart), max_cycles_(max_cycles) {
         peripherals_.attach(top_);
         top_.clk = 0;
         top_.eval();
@@ -486,14 +690,15 @@ private:
 
     Vdioptase &top_;
     VGAWIN &window_;
-    SimPeripherals peripherals_ {};
+    SimPeripherals peripherals_;
     const uint64_t max_cycles_;
     uint64_t cycle_count_ = 0;
     uint8_t clk_div_prev_ = 0;
 };
 
-bool run_headless(Vdioptase &top, uint64_t max_cycles, uint64_t &cycles_executed) {
-    SimPeripherals peripherals;
+bool run_headless(Vdioptase &top, uint64_t max_cycles, bool keyboard_via_uart,
+                  uint64_t &cycles_executed) {
+    SimPeripherals peripherals(keyboard_via_uart);
     peripherals.attach(top);
 
     top.clk = 0;
@@ -536,9 +741,9 @@ bool run_headless(Vdioptase &top, uint64_t max_cycles, uint64_t &cycles_executed
     }
 }
 
-void run_with_vga(Vdioptase &top, uint64_t max_cycles) {
+void run_with_vga(Vdioptase &top, uint64_t max_cycles, bool keyboard_via_uart) {
     VGAWIN window("640 656 752 800", "480 490 492 524");
-    DioptaseSim sim(top, window, max_cycles);
+    DioptaseSim sim(top, window, max_cycles, keyboard_via_uart);
 
     auto idle = Glib::signal_idle().connect([&]() -> bool {
         if (!sim.step()) {
@@ -579,12 +784,12 @@ int main(int argc, char **argv) {
         Gtk::Main gtk(gtk_argc, gtk_argv);
 
         Vdioptase top;
-        run_with_vga(top, opts.max_cycles);
+        run_with_vga(top, opts.max_cycles, opts.keyboard_via_uart);
         top.final();
     } else {
         Vdioptase top;
         uint64_t cycles_executed = 0;
-        bool finished = run_headless(top, opts.max_cycles, cycles_executed);
+        bool finished = run_headless(top, opts.max_cycles, opts.keyboard_via_uart, cycles_executed);
         if (!finished && opts.max_cycles != 0) {
             std::cout << "Headless simulation stopped after " << cycles_executed
                       << " cycles without $finish." << std::endl;

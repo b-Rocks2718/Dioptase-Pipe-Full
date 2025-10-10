@@ -34,7 +34,7 @@ module uart(
     uart_rx uart_rx(.clk(baud_clk), .rx(rx), .rbus(rx_bus), .ready(rx_ready));
 
     fifo rx_buf(
-        .clk(clk), .wen(rx_ready), .wdata(rx_data),
+        .clk(clk), .wen(rx_ready), .wdata(rx_bus),
         .ren(rx_en), .rdata(rx_data),
         .size(rx_buf_count)
     );
@@ -57,15 +57,23 @@ module fifo(
         if (wen) begin
             data[write_ptr] <= wdata;
             write_ptr <= write_ptr + 1;
-            count <= count + 1;
         end
-        if (ren & count != 0) begin
+
+        if (count != 0) begin
             rdata <= data[read_ptr];
-            read_ptr <= read_ptr + 1;
-            count <= count - 1;
         end else begin
             rdata <= 0;
         end
+
+        if (ren && count != 0) begin
+            read_ptr <= read_ptr + 1;
+        end
+
+        case ({wen, (ren && count != 0)})
+            2'b10: count <= count + 1;
+            2'b01: count <= count - 1;
+            default: count <= count;
+        endcase
     end
 
 endmodule
@@ -118,28 +126,42 @@ module uart_rx(
     reg running = 0;
     reg [7:0]shift = 0;
     reg [15:0]counter = 0;
-    reg [3:0]bit_num = 0;
+    reg [3:0]phase = 0; // 0 = start, 1-8 data bits, 9 = stop
+    reg ready_reg = 0;
+    reg emit_pending = 0;
 
-    assign ready = bit_num == 8;
+    assign ready = ready_reg;
 
-    always@(posedge clk) begin
-        if (!running & !rx) begin
-            running <= 1;
-            counter <= COUNTER_PERIOD / 2;
-            bit_num <= 0;
+    always @(posedge clk) begin
+        ready_reg <= emit_pending;
+        emit_pending <= 0;
+
+        if (!running && !rx) begin
+            running <= 1'b1;
+            counter <= (COUNTER_PERIOD >> 1);
+            phase <= 4'd0;
+            shift <= 8'b0;
         end else if (running) begin
-            if (counter == COUNTER_PERIOD) begin
-                counter <= 0;
-                if (bit_num < 8) begin
-                    shift <= {rx, shift[7:1]};
-                    bit_num <= bit_num + 1;
-                end else begin
-                    running <= 0;
-                    rbus <= shift;
-                end
+            if (counter == 0) begin
+                case (phase)
+                    4'd0: begin
+                        counter <= COUNTER_PERIOD - 1;
+                        phase <= 4'd1;
+                    end
+                    4'd1, 4'd2, 4'd3, 4'd4, 4'd5, 4'd6, 4'd7, 4'd8: begin
+                        shift[phase - 1] <= rx;
+                        counter <= COUNTER_PERIOD - 1;
+                        phase <= phase + 1'b1;
+                    end
+                    default: begin
+                        running <= 1'b0;
+                        rbus <= shift;
+                        emit_pending <= 1'b1;
+                    end
+                endcase
+            end else begin
+                counter <= counter - 1'b1;
             end
-        end else begin
-            counter <= counter + 1;
         end
     end
 endmodule

@@ -10,7 +10,6 @@ module mem(input clk, input clk_en,
     input [7:0]uart_rx_data, output uart_rx_ren,
     output [15:0]interrupts
 );
-
     localparam PS2_REG = 18'h20000;
     localparam VSCROLL_REG = 18'h2fffc;
     localparam HSCROLL_REG = 18'h2fffe;
@@ -101,7 +100,7 @@ module mem(input clk, input clk_en,
                             raddr0_buf == HSCROLL_REG ? {16'b0, hscroll_reg} :
                             raddr0_buf == VSCROLL_REG ?{16'b0, vscroll_reg} :
                             raddr0_buf == PS2_REG ? {24'b0, ps2_data_in[7:0]} :
-                            raddr0_buf == UART_RX_REG ? {24'b0, uart_rx_data} :
+                            raddr0_buf == UART_RX_REG ? {uart_rx_data, uart_rx_data, uart_rx_data, uart_rx_data} :
                             32'h0;
     wire [31:0]data1_out =  raddr1_buf < PS2_REG ? ram_data1_out :
       (TILEMAP_START <= raddr1_buf && raddr1_buf < FRAMEBUFFER_START) ? tilemap_data1_out :
@@ -110,7 +109,7 @@ module mem(input clk, input clk_en,
                             raddr1_buf == HSCROLL_REG ? {16'b0, hscroll_reg} :
                             raddr1_buf == VSCROLL_REG ? {16'b0, vscroll_reg} :
                             raddr1_buf == PS2_REG ? {24'b0, ps2_data_in[7:0]} :
-                            raddr1_buf == UART_RX_REG ? {24'b0, uart_rx_data} :
+                            raddr1_buf == UART_RX_REG ? {uart_rx_data, uart_rx_data, uart_rx_data, uart_rx_data} :
                             32'h0;
 
     wire pit_interrupt;
