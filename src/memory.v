@@ -34,14 +34,37 @@ module memory(input clk, input clk_en, input halt,
     exc_out = 8'd0;
   end
 
-  always @(posedge clk) begin
-    if (~halt && clk_en) begin
+always @(posedge clk) begin
+    if (clk_en) begin
+      if (halt) begin
+        tgt_out_1 <= 5'd0;
+        tgt_out_2 <= 5'd0;
+        opcode_out <= 5'd0;
+        result_out_1 <= 32'd0;
+        result_out_2 <= 32'd0;
+        bubble_out <= 1'b1;
+        addr_out <= 32'd0;
+
+        mem_pc_out <= exec_pc_out;
+        exc_out <= 8'd0;
+        tgts_cr_out <= 1'b0;
+        priv_type_out <= 5'd0;
+        crmov_mode_type_out <= 2'd0;
+        flags_out <= 4'd0;
+
+        op1_out <= 32'd0;
+        op2_out <= 32'd0;
+
+        is_load_out <= 1'b0;
+        is_store_out <= 1'b0;
+        is_misaligned_out <= 1'b0;
+      end else begin
       tgt_out_1 <= tgt_in_1;
       tgt_out_2 <= tgt_in_2;
       opcode_out <= opcode_in;
       result_out_1 <= result_in_1;
       result_out_2 <= result_in_2;
-      bubble_out <= (exc_in_wb || rfe_in_wb) ? 1 : bubble_in;
+      bubble_out <= (exc_in_wb || rfe_in_wb || halt) ? 1 : bubble_in;
       addr_out <= addr_in;
 
       mem_pc_out <= exec_pc_out;
@@ -57,6 +80,7 @@ module memory(input clk, input clk_en, input halt,
       is_load_out <= is_load;
       is_store_out <= is_store;
       is_misaligned_out <= is_misaligned;
+      end
     end
   end
 

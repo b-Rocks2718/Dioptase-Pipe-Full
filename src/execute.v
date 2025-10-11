@@ -230,8 +230,46 @@ module execute(input clk, input clk_en, input halt,
     flags_restore, rfe_in_wb,
     alu_rslt, flags);
 
-  always @(posedge clk) begin
-    if (~halt && clk_en) begin
+always @(posedge clk) begin
+    if (clk_en) begin
+        if (halt) begin
+            result_1 <= 32'd0;
+            result_2 <= 32'd0;
+            tgt_out_1 <= 5'd0;
+            tgt_out_2 <= 5'd0;
+            opcode_out <= 5'd0;
+            bubble_out <= 1'b1;
+            addr_out <= 32'd0;
+
+            was_misaligned <= 1'b0;
+            addr_buf <= 32'd0;
+            data_buf <= 32'd0;
+
+            is_load_out <= 1'b0;
+            is_store_out <= 1'b0;
+            tgts_cr_out <= 1'b0;
+            priv_type_out <= 5'd0;
+            crmov_mode_type_out <= 2'd0;
+
+            exc_out <= 8'd0;
+
+            pc_out <= decode_pc_out;
+            op1_out <= 32'd0;
+            op2_out <= 32'd0;
+
+            flags_out <= 4'd0;
+
+            reg_tgt_buf_a_1 <= 5'd0;
+            reg_tgt_buf_a_2 <= 5'd0;
+            reg_data_buf_a_1 <= 32'd0;
+            reg_data_buf_a_2 <= 32'd0;
+            tgts_cr_buf_a <= 1'b0;
+            reg_tgt_buf_b_1 <= 5'd0;
+            reg_tgt_buf_b_2 <= 5'd0;
+            reg_data_buf_b_1 <= 32'd0;
+            reg_data_buf_b_2 <= 32'd0;
+            tgts_cr_buf_b <= 1'b0;
+        end else begin
                   // jump and link
       result_1 <= (opcode == 5'd13 || opcode == 5'd14) ? decode_pc_out + 32'd4 : 
                   // crmov reading from control reg
@@ -247,7 +285,7 @@ module execute(input clk, input clk_en, input halt,
       tgt_out_1 <= (exc_in_wb || rfe_in_wb || stall) ? 5'd0 : tgt_1;
       tgt_out_2 <= (exc_in_wb || rfe_in_wb || stall) ? 5'd0 : tgt_2;
       opcode_out <= opcode;
-      bubble_out <= (exc_in_wb || rfe_in_wb || (stall && !is_misaligned)) ? 1 : bubble_in;
+      bubble_out <= (exc_in_wb || rfe_in_wb || (stall && !is_misaligned) || halt) ? 1 : bubble_in;
 
       addr_out <= addr;
       
@@ -282,8 +320,9 @@ module execute(input clk, input clk_en, input halt,
         reg_data_buf_b_2 <= reg_data_buf_a_2;
         tgts_cr_buf_b <= tgts_cr_buf_a;
       end
+        end
     end
-  end
+end
 
   wire taken;
   assign taken = (branch_code == 5'd0) ? 1 : // br

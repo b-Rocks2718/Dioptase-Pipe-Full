@@ -58,7 +58,8 @@ module pipelined_cpu(
     wire rfe_in_wb;
     wire rfi_in_wb;
     wire kmode;
-    assign flush = branch || wb_halt || exc_in_wb || rfe_in_wb;
+    wire exec_is_sleep_out;
+    assign flush = branch || wb_halt || exc_in_wb || rfe_in_wb || wb_sleep || exec_is_sleep_out;
 
     reg mem_ren = 1;
     assign mem_read0_addr = tlb_out_0;
@@ -220,6 +221,11 @@ module pipelined_cpu(
       exec_op1, exec_op2,
       exec_op1_out, exec_op2_out);
 
+    assign exec_is_sleep_out = (exec_opcode_out == 5'd31) &&
+      (exec_priv_type_out == 5'd2) &&
+      (exec_crmov_mode_type_out == 2'd1) &&
+      !exec_bubble_out;
+
     wire mem_bubble_out;
     wire mem_is_load_out;
     wire mem_is_store_out;
@@ -263,7 +269,7 @@ module pipelined_cpu(
     always @(posedge clk) begin
       if (clk_en) begin
         halt <= halt ? 1 : wb_halt;
-        sleep <= sleep ? (interrupt_state == 32'b0) : wb_sleep;
+        sleep <= sleep ? (interrupt_state == 32'b0) : exec_is_sleep_out;
       end
 
       if (clk_count >= clock_divider) begin
