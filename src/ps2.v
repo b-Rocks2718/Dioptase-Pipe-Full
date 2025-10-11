@@ -11,7 +11,6 @@ module ps2(input ps2_clk, input ps2_data, input clk, input ren, output [15:0]dat
 
     wire [15:0]scan_code;
     wire ready_flag;
-    assign ready = ready_flag;
 
     PS2Receiver receiver(
         .clk(clk),
@@ -27,6 +26,8 @@ module ps2(input ps2_clk, input ps2_data, input clk, input ren, output [15:0]dat
     assign data = keyboard_reg;
     wire [7:0]ascii = scan_decode[scan_code[7:0]];
     wire ascii_valid = (ascii != 8'h00);
+    wire make_ready = ready_flag && !break_pending && ascii_valid;
+    assign ready = make_ready;
 
     always @(posedge clk) begin
         if (ready_flag) begin
