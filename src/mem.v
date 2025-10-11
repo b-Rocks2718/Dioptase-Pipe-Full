@@ -2,7 +2,7 @@
 
 module mem(input clk, input clk_en,
     input [17:0]raddr0, output reg [31:0]rdata0,
-    input [17:0]raddr1, output reg [31:0]rdata1,
+    input ren, input [17:0]raddr1, output reg [31:0]rdata1,
     input [3:0]wen, input [17:0]waddr, input [31:0]wdata,
     output ps2_ren, input [15:0]ps2_data_in,
     input [9:0]pixel_x_in, input [9:0]pixel_y_in, output [11:0]pixel,
@@ -41,6 +41,7 @@ module mem(input clk, input clk_en,
     reg [17:0]raddr0_buf;
     reg [17:0]raddr1_buf;
     reg [17:0]waddr_buf;
+    reg ren_buf = 1'b0;
 
     reg [3:0]wen_buf;
 
@@ -69,9 +70,9 @@ module mem(input clk, input clk_en,
     endfunction
 
 
-    assign ps2_ren = raddr1_buf == PS2_REG;
+    assign ps2_ren = (raddr1_buf == PS2_REG) && ren_buf;
     assign uart_tx_wen = (waddr_buf[17:2] == UART_TX_REG[17:2]) && wen_buf[waddr_buf[1:0]];
-    assign uart_rx_ren = raddr1_buf == UART_RX_REG;
+    assign uart_rx_ren = (raddr1_buf == UART_RX_REG) && ren_buf;
 
     reg [31:0]display_framebuffer_out;
     reg [1:0]display_tile_index;
@@ -99,7 +100,7 @@ module mem(input clk, input clk_en,
                             raddr0_buf == SCALE_REG ? {24'b0, scale_reg} :
                             raddr0_buf == HSCROLL_REG ? {16'b0, hscroll_reg} :
                             raddr0_buf == VSCROLL_REG ?{16'b0, vscroll_reg} :
-                            raddr0_buf == PS2_REG ? {24'b0, ps2_data_in[7:0]} :
+                            raddr0_buf == PS2_REG ? {16'b0, ps2_data_in} :
                             raddr0_buf == UART_RX_REG ? {uart_rx_data, uart_rx_data, uart_rx_data, uart_rx_data} :
                             32'h0;
     wire [31:0]data1_out =  raddr1_buf < PS2_REG ? ram_data1_out :
@@ -108,7 +109,7 @@ module mem(input clk, input clk_en,
                             raddr1_buf == SCALE_REG ? {24'b0, scale_reg} :
                             raddr1_buf == HSCROLL_REG ? {16'b0, hscroll_reg} :
                             raddr1_buf == VSCROLL_REG ? {16'b0, vscroll_reg} :
-                            raddr1_buf == PS2_REG ? {24'b0, ps2_data_in[7:0]} :
+                            raddr1_buf == PS2_REG ? {16'b0, ps2_data_in} :
                             raddr1_buf == UART_RX_REG ? {uart_rx_data, uart_rx_data, uart_rx_data, uart_rx_data} :
                             32'h0;
 
@@ -135,6 +136,7 @@ module mem(input clk, input clk_en,
         waddr_buf <= waddr;
 
         wen_buf <= wen;
+        ren_buf <= ren;
 
         ram_data0_out <= ram[raddr0[16:2]];
         ram_data1_out <= ram[raddr1[16:2]];

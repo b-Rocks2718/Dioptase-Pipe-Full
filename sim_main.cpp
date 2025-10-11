@@ -27,6 +27,41 @@
 
 namespace {
 
+std::optional<uint8_t> lookup_ps2_scancode(char ch) {
+    static const std::unordered_map<char, uint8_t> table = {
+        {'a', 0x1C}, {'b', 0x32}, {'c', 0x21}, {'d', 0x23}, {'e', 0x24},
+        {'f', 0x2B}, {'g', 0x34}, {'h', 0x33}, {'i', 0x43}, {'j', 0x3B},
+        {'k', 0x42}, {'l', 0x4B}, {'m', 0x3A}, {'n', 0x31}, {'o', 0x44},
+        {'p', 0x4D}, {'q', 0x15}, {'r', 0x2D}, {'s', 0x1B}, {'t', 0x2C},
+        {'u', 0x3C}, {'v', 0x2A}, {'w', 0x1D}, {'x', 0x22}, {'y', 0x35},
+        {'z', 0x1A}, {'1', 0x16}, {'2', 0x1E}, {'3', 0x26}, {'4', 0x25},
+        {'5', 0x2E}, {'6', 0x36}, {'7', 0x3D}, {'8', 0x3E}, {'9', 0x46},
+        {'0', 0x45}, {'-', 0x4E}, {'=', 0x55}, {'`', 0x0E}, {'[', 0x54},
+        {']', 0x5B}, {'\\', 0x5D}, {';', 0x4C}, {'\'', 0x52}, {',', 0x41},
+        {'.', 0x49}, {'/', 0x4A}, {' ', 0x29}, {'\n', 0x5A}, {'\t', 0x0D},
+        {'\b', 0x66}
+    };
+
+    if (ch == '\r') {
+        ch = '\n';
+    }
+    if (ch == '\t') {
+        ch = '\n';
+        return table.at('\n');
+    }
+    if (ch == '\b' || ch == 0x7F) {
+        ch = '\b';
+    }
+    if (std::isalpha(static_cast<unsigned char>(ch))) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    auto it = table.find(ch);
+    if (it == table.end()) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
 struct Options {
     bool use_vga = false;
     bool max_cycles_overridden = false;
@@ -353,11 +388,11 @@ private:
     }
 
     std::optional<std::vector<uint8_t>> encode_character(char ch) const {
-        auto sc = lookup_scancode(ch);
+        auto sc = lookup_ps2_scancode(ch);
         if (!sc) {
             return std::nullopt;
         }
-        return std::vector<uint8_t>{*sc};
+        return std::vector<uint8_t>{*sc, 0xF0, *sc};
     }
 
     TerminalRawGuard &guard_;
@@ -369,43 +404,6 @@ private:
     bool ps2_debug_ = false;
     bool uart_debug_ = false;
 
-private:
-    static std::optional<uint8_t> lookup_scancode(char ch) {
-        static const std::unordered_map<char, uint8_t> table = {
-            {'a', 0x1C}, {'b', 0x32}, {'c', 0x21}, {'d', 0x23}, {'e', 0x24},
-            {'f', 0x2B}, {'g', 0x34}, {'h', 0x33}, {'i', 0x43}, {'j', 0x3B},
-            {'k', 0x42}, {'l', 0x4B}, {'m', 0x3A}, {'n', 0x31}, {'o', 0x44},
-            {'p', 0x4D}, {'q', 0x15}, {'r', 0x2D}, {'s', 0x1B}, {'t', 0x2C},
-            {'u', 0x3C}, {'v', 0x2A}, {'w', 0x1D}, {'x', 0x22}, {'y', 0x35},
-            {'z', 0x1A}, {'1', 0x16}, {'2', 0x1E}, {'3', 0x26}, {'4', 0x25},
-            {'5', 0x2E}, {'6', 0x36}, {'7', 0x3D}, {'8', 0x3E}, {'9', 0x46},
-            {'0', 0x45}, {'-', 0x4E}, {'=', 0x55}, {'`', 0x0E}, {'[', 0x54},
-            {']', 0x5B}, {'\\', 0x5D}, {';', 0x4C}, {'\'', 0x52}, {',', 0x41},
-            {'.', 0x49}, {'/', 0x4A}, {' ', 0x29}, {'\n', 0x5A}, {'\t', 0x0D},
-            {'\b', 0x66}
-        };
-
-        if (ch == '\r') {
-            ch = '\n';
-        }
-        if (ch == '\t') {
-            return 0x0D;
-        }
-        if (ch == '\b' || ch == 0x7F) {
-            return 0x66;
-        }
-        if (ch == '\n') {
-            return 0x5A;
-        }
-        if (std::isalpha(static_cast<unsigned char>(ch))) {
-            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-        }
-        auto it = table.find(ch);
-        if (it == table.end()) {
-            return std::nullopt;
-        }
-        return it->second;
-    }
 };
 
 class UartConsole {
@@ -451,7 +449,8 @@ public:
         : keyboard_route_(keyboard_via_uart ? KeyboardRoute::Uart : KeyboardRoute::Ps2),
           keyboard_(guard_, ps2_, uart_input_, keyboard_route_),
           pit_debug_(std::getenv("PIT_DEBUG") != nullptr),
-          uart_debug_(std::getenv("UART_DEBUG") != nullptr) {
+          uart_debug_(std::getenv("UART_DEBUG") != nullptr),
+          ps2_debug_(std::getenv("PS2_DEBUG") != nullptr) {
         const char *boot = std::getenv("UART_BOOT");
         if (boot != nullptr) {
             while (*boot != '\0') {
@@ -459,11 +458,38 @@ public:
                 ++boot;
             }
         }
+        const char *ps2_boot = std::getenv("PS2_BOOT");
+        if (ps2_boot != nullptr) {
+            bool warned = false;
+            while (*ps2_boot != '\0') {
+                const char ch = *ps2_boot++;
+                auto sc = lookup_ps2_scancode(ch);
+                if (sc) {
+                    initial_ps2_scancodes_.push_back(*sc);
+                    initial_ps2_scancodes_.push_back(0xF0);
+                    initial_ps2_scancodes_.push_back(*sc);
+                } else if (!warned) {
+                    std::cerr << "No PS/2 mapping for bootstrap character ";
+                    if (std::isprint(static_cast<unsigned char>(ch))) {
+                        std::cerr << "'" << ch << "'";
+                    } else {
+                        std::cerr << "0x" << std::hex << std::setw(2) << std::setfill('0')
+                                  << static_cast<int>(static_cast<unsigned char>(ch))
+                                  << std::dec << std::setfill(' ');
+                    }
+                    std::cerr << "." << std::endl;
+                    warned = true;
+                }
+            }
+        }
     }
 
     void attach(Vdioptase &top) {
         ps2_.reset(top);
         uart_input_.reset(top);
+        for (uint8_t sc : initial_ps2_scancodes_) {
+            ps2_.enqueue_sequence(std::vector<uint8_t>{sc});
+        }
         for (uint8_t value : initial_uart_bytes_) {
             uart_input_.enqueue_byte(value);
         }
@@ -538,6 +564,14 @@ public:
                 prev_r5_ = reg_r5_cur;
             }
         }
+        if (ps2_debug_) {
+            const uint16_t value = static_cast<uint16_t>(top.dioptase__DOT__ps2__DOT__keyboard_reg);
+            if (value != prev_ps2_value_) {
+                std::cerr << "[ps2] keyboard_reg -> 0x" << std::hex << std::setw(4) << std::setfill('0')
+                          << value << std::dec << std::setfill(' ') << std::endl;
+                prev_ps2_value_ = value;
+            }
+        }
         if (pit_debug_) {
             const bool pit_irq = top.dioptase__DOT__mem__DOT__pit_interrupt;
             if (pit_irq && !pit_irq_prev_) {
@@ -570,10 +604,13 @@ private:
     bool pit_irq_prev_ = false;
     uint64_t total_cycles_ = 0;
     std::vector<uint8_t> initial_uart_bytes_;
+    std::vector<uint8_t> initial_ps2_scancodes_;
     bool uart_debug_ = false;
+    bool ps2_debug_ = false;
     uint8_t prev_rx_count_ = 0;
     uint8_t prev_tx_count_ = 0;
     uint32_t prev_r5_ = 0;
+    uint16_t prev_ps2_value_ = 0;
 };
 
 Options parse_options(int argc, char **argv, std::vector<std::string> &verilator_args) {
@@ -589,7 +626,7 @@ Options parse_options(int argc, char **argv, std::vector<std::string> &verilator
             opts.use_vga = true;
             continue;
         }
-        if (arg == "--uart-input") {
+        if (arg == "--uart") {
             opts.keyboard_via_uart = true;
             continue;
         }

@@ -3,7 +3,8 @@
 module uart(
     input clk, input baud_clk,
     input tx_en, input [7:0]tx_data, output tx,
-    input rx, input rx_en, output [7:0]rx_data
+    input rx, input rx_en, output [7:0]rx_data,
+    output rx_ready
 );
 
     wire [7:0]tx_buf_count;
@@ -30,7 +31,6 @@ module uart(
     wire [7:0]rx_bus;
     wire [7:0]rx_buf_count;
 
-    wire rx_ready;
     uart_rx uart_rx(.clk(baud_clk), .rx(rx), .rbus(rx_bus), .ready(rx_ready));
 
     fifo rx_buf(

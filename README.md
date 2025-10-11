@@ -19,6 +19,12 @@ Use `make all` or `make sim.vvp` to build the project.
 Run it on a hex file with `./sim.vvp +hex=<file.hex>`
 
 Build it with verilator using `make verilator`.
+Run with verilator using `./obj_dir/dioptase +hex=<file.hex>`
+
+The verilator sim accepts the follwing flags:  
+`--vga`: make a window with the VGA output  
+`--uart`: route keyboard input to the UART instead of ps/2  
+`--max-cycles=<number>`: limit the maximum number of cycles. Default is 500 for now. Use `--max-cycles=0` to run forever. Using `--vga` will also remove any limit on the number of cycles. 
 
 Run the tests with `iverilog` using `make test`.  
 Run the tests with `verilator` using `make test_verilator`.  

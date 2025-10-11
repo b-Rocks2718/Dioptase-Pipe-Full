@@ -46,6 +46,7 @@ module dioptase(
     wire [17:0]mem_read1_addr;
     wire [31:0]mem_read1_data;
     wire [3:0]mem_write_en;
+    wire mem_read_en;
     wire [17:0]mem_write_addr;
     wire [31:0]mem_write_data;
 
@@ -59,13 +60,14 @@ module dioptase(
     wire [15:0]interrupts;
     wire [15:0]mem_interrupts;
     wire ps2_ready_flag;
+    wire uart_rx_ready;
 
-    assign interrupts = mem_interrupts | {14'b0, ps2_ready_flag, 1'b0};
+    assign interrupts = mem_interrupts | {13'b0, uart_rx_ready, ps2_ready_flag, 1'b0};
 
     pipelined_cpu cpu(
         clk, interrupts,
         mem_read0_addr, mem_read0_data,
-        mem_read1_addr, mem_read1_data,
+        mem_read_en, mem_read1_addr, mem_read1_data,
         mem_write_en, mem_write_addr, mem_write_data,
         ret_val, flags, cpu_pc, clk_en
     );
@@ -104,12 +106,13 @@ module dioptase(
     uart uart(
         .clk(clk), .baud_clk(clk), 
         .tx_en(uart_tx_en), .tx_data(uart_tx_data), .tx(uart_tx),
-        .rx(uart_rx), .rx_en(uart_rx_en), .rx_data(uart_rx_data)
+        .rx(uart_rx), .rx_en(uart_rx_en), .rx_data(uart_rx_data),
+        .rx_ready(uart_rx_ready)
     );
 
     mem mem(.clk(clk), .clk_en(clk_en),
         .raddr0(mem_read0_addr), .rdata0(mem_read0_data),
-        .raddr1(mem_read1_addr), .rdata1(mem_read1_data),
+        .ren(mem_read_en), .raddr1(mem_read1_addr), .rdata1(mem_read1_data),
         .wen(mem_write_en), .waddr(mem_write_addr), .wdata(mem_write_data),
         .ps2_ren(ps2_ren),
         .ps2_data_in(ps2_data_out),

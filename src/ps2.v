@@ -29,20 +29,21 @@ module ps2(input ps2_clk, input ps2_data, input clk, input ren, output [15:0]dat
     wire ascii_valid = (ascii != 8'h00);
 
     always @(posedge clk) begin
-        if (ren) begin
-            keyboard_reg <= 0;
-        end else if (ready_flag) begin
+        if (ready_flag) begin
             if (scan_code[7:0] == 8'hF0) begin
                 break_pending <= 1;
             end else if (scan_code[7:0] == 8'hE0) begin
                 extended_pending <= 1;
             end else begin
-                if (!break_pending && ascii_valid) begin
-                    keyboard_reg <= {8'h00, ascii};
+                if (ascii_valid) begin
+                    keyboard_reg <= break_pending ? {8'h01, ascii}
+                                                  : {8'h00, ascii};
                 end
                 break_pending <= 0;
                 extended_pending <= 0;
             end
+        end else if (ren) begin
+            keyboard_reg <= 0;
         end
     end
 

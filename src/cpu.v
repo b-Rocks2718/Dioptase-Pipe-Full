@@ -3,7 +3,7 @@
 module pipelined_cpu(
   input clk, input [15:0]interrupts,
   output [17:0]mem_read0_addr, input [31:0]mem_read0_data,
-  output [17:0]mem_read1_addr, input [31:0]mem_read1_data,
+  output mem_re, output [17:0]mem_read1_addr, input [31:0]mem_read1_data,
   output [3:0]mem_we, output [17:0]mem_write_addr, output [31:0]mem_write_data,
   output [31:0]ret_val, output [3:0]flags, output [31:0]curr_pc,
   output reg clk_en
@@ -211,7 +211,7 @@ module pipelined_cpu(
       tlb_read, exc_tlb_1,
 
       exec_result_out_1, exec_result_out_2,
-      addr, store_data, mem_we, exec_addr_out,
+      addr, mem_re, store_data, mem_we, exec_addr_out,
       exec_opcode_out, exec_tgt_out_1, exec_tgt_out_2, exec_bubble_out, 
       branch, branch_tgt, flags, exec_flags_out, stall, is_misaligned,
       exec_is_load_out, exec_is_store_out, exec_is_misaligned_out,

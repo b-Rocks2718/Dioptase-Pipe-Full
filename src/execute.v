@@ -25,7 +25,7 @@ module execute(input clk, input clk_en, input halt,
     input [5:0]tlb_read, input [7:0]tlb_exc_in,
 
     output reg [31:0]result_1, output reg [31:0]result_2,
-    output [31:0]addr, output [31:0]store_data, output [3:0]we, output reg [31:0]addr_out,
+    output [31:0]addr, output mem_re, output [31:0]store_data, output [3:0]we, output reg [31:0]addr_out,
     output reg [4:0]opcode_out, 
     output reg [4:0]tgt_out_1, output reg [4:0]tgt_out_2,
     
@@ -174,6 +174,9 @@ module execute(input clk, input clk_en, input halt,
     32'h0;
 
   wire we_bit = is_store && !bubble_in && !exc_in_wb 
+                && !rfe_in_wb && (exc_out == 8'd0) && (!stall || is_misaligned);
+
+  assign mem_re = is_load && !bubble_in && !exc_in_wb 
                 && !rfe_in_wb && (exc_out == 8'd0) && (!stall || is_misaligned);
 
   assign we = 
