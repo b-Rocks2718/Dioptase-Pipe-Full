@@ -52,8 +52,27 @@ module execute(input clk, input clk_en, input halt,
     reg_tgt_buf_b_2 = 5'd0;
     tgts_cr_buf_a = 0;
     tgts_cr_buf_b = 0;
-
+    reg_data_buf_a_1 = 32'd0;
+    reg_data_buf_a_2 = 32'd0;
+    reg_data_buf_b_1 = 32'd0;
+    reg_data_buf_b_2 = 32'd0;
+    addr_buf = 32'd0;
+    data_buf = 32'd0;
+    result_1 = 32'd0;
+    result_2 = 32'd0;
+    addr_out = 32'd0;
+    opcode_out = 5'd0;
+    flags_out = 4'd0;
+    is_load_out = 1'b0;
+    is_store_out = 1'b0;
+    was_misaligned = 1'b0;
+    tgts_cr_out = 1'b0;
+    priv_type_out = 5'd0;
+    crmov_mode_type_out = 2'd0;
     exc_out = 8'd0;
+    pc_out = 32'd0;
+    op1_out = 32'd0;
+    op2_out = 32'd0;
   end
 
   reg [4:0]reg_tgt_buf_a_1;

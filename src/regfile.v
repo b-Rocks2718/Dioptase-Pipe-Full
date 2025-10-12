@@ -3,11 +3,17 @@
 module regfile(input clk, input clk_en,
     input [4:0]raddr0, output reg [31:0]rdata0,
     input [4:0]raddr1, output reg [31:0]rdata1,
-    input wen0, input [4:0]waddr0, input [31:0]wdata0, 
-    input wen1, input [4:0]waddr1, input [31:0]wdata1,
-    input stall, output [31:0]ret_val);
+  input wen0, input [4:0]waddr0, input [31:0]wdata0, 
+  input wen1, input [4:0]waddr1, input [31:0]wdata1,
+  input stall, output [31:0]ret_val);
 
   reg [31:0]regfile[0:5'b11111];
+  integer i;
+
+  initial begin
+    for (i = 0; i < 32; i = i + 1)
+      regfile[i] = 32'd0;
+  end
 
   // compiler puts return value in r3
   // expose it here to allow for testing

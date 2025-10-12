@@ -36,8 +36,8 @@ module writeback(input clk, input clk_en, input halt, input bubble_in,
   assign rfi_in_wb = rfe_in_wb && crmov_mode_type[1] == 1'b1 && !bubble_in && !exc_in_wb;
   assign tlb_exc_in_wb = exc_in_wb && (exc_in == 8'h82 || exc_in == 8'h83);
   
-  assign halt_out = (opcode == 5'd31) && (priv_type == 5'd2) && (crmov_mode_type == 2'd2) && !bubble_in && !exc_in_wb;
-  assign sleep_out = (opcode == 5'd31) && (priv_type == 5'd2) && (crmov_mode_type == 2'd1) && !bubble_in && !exc_in_wb;
+  assign halt_out = (opcode === 5'd31) && (priv_type === 5'd2) && (crmov_mode_type === 2'd2) && !bubble_in && !exc_in_wb;
+  assign sleep_out = (opcode === 5'd31) && (priv_type === 5'd2) && (crmov_mode_type === 2'd1) && !bubble_in && !exc_in_wb;
 
   always @(posedge clk) begin
     if (~halt && clk_en) begin

@@ -100,6 +100,36 @@ module mem(input clk, input clk_en,
         sd_start_pending = 1'b0;
         sd_start_strobe = 1'b0;
         sd_irq_pending = 1'b0;
+        raddr0_buf = 18'd0;
+        raddr1_buf = 18'd0;
+        waddr_buf = 18'd0;
+        ren_buf = 1'b0;
+        wen_buf = 4'd0;
+        ram_data0_out = 32'd0;
+        ram_data1_out = 32'd0;
+        tilemap_data0_out = 32'd0;
+        tilemap_data1_out = 32'd0;
+        framebuffer_data0_out = 32'd0;
+        framebuffer_data1_out = 32'd0;
+        sprite_0_data0_out = 32'd0;
+        sprite_0_data1_out = 32'd0;
+        sprite_1_data0_out = 32'd0;
+        sprite_1_data1_out = 32'd0;
+        sprite_2_data0_out = 32'd0;
+        sprite_2_data1_out = 32'd0;
+        sprite_3_data0_out = 32'd0;
+        sprite_3_data1_out = 32'd0;
+        sprite_4_data0_out = 32'd0;
+        sprite_4_data1_out = 32'd0;
+        sprite_5_data0_out = 32'd0;
+        sprite_5_data1_out = 32'd0;
+        sprite_6_data0_out = 32'd0;
+        sprite_6_data1_out = 32'd0;
+        sprite_7_data0_out = 32'd0;
+        sprite_7_data1_out = 32'd0;
+        rdata0 = 32'd0;
+        rdata1 = 32'd0;
+        uart_tx_data = 8'd0;
     end
 
     reg [17:0]raddr0_buf;
@@ -334,7 +364,8 @@ module mem(input clk, input clk_en,
         end
     endfunction
     wire [31:0]data0_out = ram_data0_out;
-    wire [31:0]data1_out =  (SD_START_REG <= raddr1_buf && raddr1_buf <= SD_DATA_END) ? sd_read_word(raddr1_buf) :
+    wire sd_window_selected = ren_buf && (SD_START_REG <= raddr1_buf) && (raddr1_buf <= SD_DATA_END);
+    wire [31:0]data1_out =  sd_window_selected ? sd_read_word(raddr1_buf) :
       raddr1_buf < PS2_REG ? ram_data1_out :
       (SPRITE_0_START <= raddr1_buf && raddr1_buf < SPRITE_1_START) ? sprite_0_data1_out :
       (SPRITE_1_START <= raddr1_buf && raddr1_buf < SPRITE_2_START) ? sprite_1_data1_out :
