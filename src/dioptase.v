@@ -9,7 +9,11 @@ module dioptase(
     output [3:0]vga_green,
     output [3:0]vga_blue,
     input uart_rx,
-    output uart_tx
+    output uart_tx,
+    output sd_spi_cs,
+    output sd_spi_clk,
+    output sd_spi_mosi,
+    input sd_spi_miso
 `endif
 );
     
@@ -37,6 +41,11 @@ module dioptase(
       wire [3:0]vga_blue;
       wire uart_rx = 0;
       wire uart_tx;
+      wire sd_spi_cs;
+      wire sd_spi_clk;
+      wire sd_spi_mosi;
+      reg sd_spi_miso;
+      initial sd_spi_miso = 1'b1;
       clock c0(clk);
     `endif
 
@@ -119,6 +128,7 @@ module dioptase(
         .pixel_x_in(pixel_addr_x), .pixel_y_in(pixel_addr_y), .pixel(display_pixel),
         .uart_tx_data(uart_tx_data), .uart_tx_wen(uart_tx_en),
         .uart_rx_data(uart_rx_data), .uart_rx_ren(uart_rx_en),
+        .sd_spi_cs(sd_spi_cs), .sd_spi_clk(sd_spi_clk), .sd_spi_mosi(sd_spi_mosi), .sd_spi_miso(sd_spi_miso),
         .interrupts(mem_interrupts)
     );
 

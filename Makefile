@@ -20,8 +20,11 @@ GTKMM_LIBS		 := $(shell pkg-config --libs gtkmm-3.0)
 
 CPU_TESTS_SRCS   := $(wildcard $(CPU_TESTS_DIR)/*.s)
 # some emu tests run forever and use i/o
+EMU_TESTS_ALL      := $(wildcard $(EMU_TESTS_DIR)/*.s)
+SDCARD_TEST        := $(EMU_TESTS_DIR)/sdcard.s
 EMU_TESTS_EXCLUDE := $(EMU_TESTS_DIR)/cdiv.s $(EMU_TESTS_DIR)/colors.s $(EMU_TESTS_DIR)/green.s $(EMU_TESTS_DIR)/sprite.s $(EMU_TESTS_DIR)/uart.s $(EMU_TESTS_DIR)/sleep.s $(EMU_TESTS_DIR)/ps2.s $(EMU_TESTS_DIR)/uart_rx.s
-EMU_TESTS_SRCS := $(filter-out $(EMU_TESTS_EXCLUDE),$(wildcard $(EMU_TESTS_DIR)/*.s))
+EMU_TESTS_SRCS    := $(filter-out $(EMU_TESTS_EXCLUDE),$(EMU_TESTS_ALL))
+EMU_TESTS_SRCS_ICARUS := $(filter-out $(SDCARD_TEST),$(EMU_TESTS_SRCS))
 ASM_SRCS         := $(CPU_TESTS_SRCS) $(EMU_TESTS_SRCS)
 
 HEXES        := $(patsubst %.s,$(HEX_DIR)/%.hex,$(notdir $(ASM_SRCS)))
@@ -96,7 +99,7 @@ test: $(ASM_SRCS) $(VERILOG_SRCS) | dirs
 	  $(ASSEMBLER) $(CPU_TESTS_DIR)/$$t.s -o $(HEX_DIR)/$$t.hex -nostart && \
 	  $(EMULATOR) $(HEX_DIR)/$$t.hex > $(OUT_DIR)/$$t.emuout && \
 	  $(VVP) sim.vvp +hex=$(HEX_DIR)/$$t.hex +vcd=$(OUT_DIR)/$$t.vcd 2>/dev/null \
-  		| grep -v "VCD info:" > $(OUT_DIR)/$$t.vout ; \
+		| grep -v "VCD info:" > $(OUT_DIR)/$$t.vout ; \
 	  if cmp --silent $(OUT_DIR)/$$t.emuout $(OUT_DIR)/$$t.vout; then \
 	    echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
 	  else \

@@ -8,6 +8,7 @@ module mem(input clk, input clk_en,
     input [9:0]pixel_x_in, input [9:0]pixel_y_in, output [11:0]pixel,
     output reg [7:0]uart_tx_data, output uart_tx_wen,
     input [7:0]uart_rx_data, output uart_rx_ren,
+    output sd_spi_cs, output sd_spi_clk, output sd_spi_mosi, input sd_spi_miso,
     output [15:0]interrupts
 );
     localparam PS2_REG = 18'h20000;
@@ -48,6 +49,12 @@ module mem(input clk, input clk_en,
     localparam SPRITE_7_X = 18'h2ffec;
     localparam SPRITE_7_Y = 18'h2ffee;
 
+    localparam SD_START_REG = 18'h201f9;
+    localparam SD_CMD_BASE = 18'h201fa;
+    localparam SD_CMD_END = 18'h201ff;
+    localparam SD_DATA_BASE = 18'h20200;
+    localparam SD_DATA_END = 18'h203ff;
+
     // we got 1800Kb total on the Basys 3
     (* ram_style = "block" *) reg [31:0]ram[0:16'h7fff]; // 1049Kb (0x0000-0x1FFFF)
 
@@ -84,6 +91,15 @@ module mem(input clk, input clk_en,
           sprite_6_data[i] = 32'hf000f000;
           sprite_7_data[i] = 32'hf000f000;
         end
+        for (i = 0; i < 6; i = i + 1) begin
+          sd_cmd_buffer[i] = 8'h00;
+        end
+        for (i = 0; i < 512; i = i + 1) begin
+          sd_data_buffer[i] = 8'h00;
+        end
+        sd_start_pending = 1'b0;
+        sd_start_strobe = 1'b0;
+        sd_irq_pending = 1'b0;
     end
 
     reg [17:0]raddr0_buf;
@@ -125,6 +141,8 @@ module mem(input clk, input clk_en,
     reg [17:0]scroll_word_base;
     reg [17:0]scroll_byte_addr;
     reg [7:0]scroll_byte_data;
+    reg [8:0]sd_byte_offset;
+    integer sd_copy_idx;
 
     function [7:0] select_lane_byte;
         input [31:0] data;
@@ -165,9 +183,43 @@ module mem(input clk, input clk_en,
     reg use_sprite_6 = 0;                 
     reg use_sprite_7 = 0;
 
+    reg [7:0]sd_cmd_buffer[0:5];
+    reg [7:0]sd_data_buffer[0:511];
+    reg sd_start_pending = 1'b0;
+    reg sd_start_strobe = 1'b0;
+    reg sd_irq_pending = 1'b0;
+    wire [47:0]sd_cmd_buffer_out;
+    wire sd_cmd_buffer_out_valid;
+    wire [4095:0]sd_data_buffer_out;
+    wire sd_data_buffer_out_valid;
+    wire sd_busy;
+    wire sd_interrupt;
+    wire sd_spi_cs_int;
+    wire sd_spi_clk_int;
+    wire sd_spi_mosi_int;
+    wire [47:0]sd_cmd_buffer_in_flat;
+    wire [4095:0]sd_data_buffer_in_flat;
+    wire [7:0]sd_cmd_buffer_out_bytes[0:5];
+    wire [7:0]sd_data_buffer_out_bytes[0:511];
+    genvar sd_cmd_i;
+    generate
+        for (sd_cmd_i = 0; sd_cmd_i < 6; sd_cmd_i = sd_cmd_i + 1) begin : gen_sd_cmd_buffers
+            assign sd_cmd_buffer_in_flat[sd_cmd_i*8 +: 8] = sd_cmd_buffer[sd_cmd_i];
+            assign sd_cmd_buffer_out_bytes[sd_cmd_i] = sd_cmd_buffer_out[sd_cmd_i*8 +: 8];
+        end
+    endgenerate
+
     assign ps2_ren = (raddr1_buf == PS2_REG) && ren_buf;
     assign uart_tx_wen = (waddr_buf[17:2] == UART_TX_REG[17:2]) && wen_buf[waddr_buf[1:0]];
     assign uart_rx_ren = (raddr1_buf == UART_RX_REG) && ren_buf;
+
+    genvar sd_data_i;
+    generate
+        for (sd_data_i = 0; sd_data_i < 512; sd_data_i = sd_data_i + 1) begin : gen_sd_data_buffers
+            assign sd_data_buffer_in_flat[sd_data_i*8 +: 8] = sd_data_buffer[sd_data_i];
+            assign sd_data_buffer_out_bytes[sd_data_i] = sd_data_buffer_out[sd_data_i*8 +: 8];
+        end
+    endgenerate
 
     reg [31:0]display_framebuffer_out;
     reg [1:0]display_tile_index;
@@ -255,8 +307,35 @@ module mem(input clk, input clk_en,
         end
     endfunction
 
+    function [7:0]sd_read_byte;
+        input [17:0]addr;
+        reg [8:0]offset;
+        begin
+            if (addr == SD_START_REG) begin
+                sd_read_byte = {7'b0, sd_busy};
+            end else if (SD_CMD_BASE <= addr && addr <= SD_CMD_END) begin
+                offset = {6'b0, addr[2:0]} - {6'b0, SD_CMD_BASE[2:0]};
+                sd_read_byte = sd_cmd_buffer[offset[2:0]];
+            end else if (SD_DATA_BASE <= addr && addr <= SD_DATA_END) begin
+                offset = addr[8:0];
+                sd_read_byte = sd_data_buffer[offset];
+            end else begin
+                sd_read_byte = 8'h00;
+            end
+        end
+    endfunction
+    function [31:0]sd_read_word;
+        input [17:0]addr;
+        reg [17:0]base;
+        begin
+            base = {addr[17:2], 2'b00};
+            sd_read_word = {sd_read_byte(base + 18'd3), sd_read_byte(base + 18'd2),
+                            sd_read_byte(base + 18'd1), sd_read_byte(base)};
+        end
+    endfunction
     wire [31:0]data0_out = ram_data0_out;
-    wire [31:0]data1_out =  raddr1_buf < PS2_REG ? ram_data1_out :
+    wire [31:0]data1_out =  (SD_START_REG <= raddr1_buf && raddr1_buf <= SD_DATA_END) ? sd_read_word(raddr1_buf) :
+      raddr1_buf < PS2_REG ? ram_data1_out :
       (SPRITE_0_START <= raddr1_buf && raddr1_buf < SPRITE_1_START) ? sprite_0_data1_out :
       (SPRITE_1_START <= raddr1_buf && raddr1_buf < SPRITE_2_START) ? sprite_1_data1_out :
       (SPRITE_2_START <= raddr1_buf && raddr1_buf < SPRITE_3_START) ? sprite_2_data1_out :
@@ -297,7 +376,27 @@ module mem(input clk, input clk_en,
     pit pit(clk, clk_en,
         pit_we, wdata, pit_interrupt);
 
-    assign interrupts = {15'd0, pit_interrupt};
+    sd_spi_controller sd_ctrl(
+        .clk(clk),
+        .clk_en(clk_en),
+        .start(sd_start_strobe),
+        .cmd_buffer_in(sd_cmd_buffer_in_flat),
+        .data_buffer_in(sd_data_buffer_in_flat),
+        .cmd_buffer_out(sd_cmd_buffer_out),
+        .cmd_buffer_out_valid(sd_cmd_buffer_out_valid),
+        .data_buffer_out(sd_data_buffer_out),
+        .data_buffer_out_valid(sd_data_buffer_out_valid),
+        .busy(sd_busy),
+        .interrupt(sd_interrupt),
+        .spi_cs(sd_spi_cs_int),
+        .spi_clk(sd_spi_clk_int),
+        .spi_mosi(sd_spi_mosi_int),
+        .spi_miso(sd_spi_miso)
+    );
+    assign sd_spi_cs = sd_spi_cs_int;
+    assign sd_spi_clk = sd_spi_clk_int;
+    assign sd_spi_mosi = sd_spi_mosi_int;
+    assign interrupts = {12'd0, sd_irq_pending, 2'd0, pit_interrupt};
 
     wire scroll_debug = ($test$plusargs("scroll_debug") != 0);
 
@@ -365,17 +464,28 @@ module mem(input clk, input clk_en,
         tilemap_data1_out <= tile_map[raddr1[13:2] - TILEMAP_START[13:2]];
         framebuffer_data1_out <= frame_buffer[raddr1[12:2]];
 
+        sd_start_strobe <= 1'b0;
+        if (sd_cmd_buffer_out_valid) begin
+            for (sd_copy_idx = 0; sd_copy_idx < 6; sd_copy_idx = sd_copy_idx + 1) begin
+                sd_cmd_buffer[sd_copy_idx] = sd_cmd_buffer_out_bytes[sd_copy_idx];
+            end
+        end
+        if (sd_data_buffer_out_valid) begin
+            for (sd_copy_idx = 0; sd_copy_idx < 512; sd_copy_idx = sd_copy_idx + 1) begin
+                sd_data_buffer[sd_copy_idx] = sd_data_buffer_out_bytes[sd_copy_idx];
+            end
+        end
+        if (sd_interrupt) begin
+            sd_irq_pending <= 1'b1;
+        end
+        if (sd_start_pending && !sd_busy) begin
+            sd_start_strobe <= 1'b1;
+            sd_start_pending <= 1'b0;
+            sd_irq_pending <= 1'b0;
+        end
+
         rdata0 <= data0_out;
         rdata1 <= data1_out;
-
-        //(SPRITE_0_START <= raddr1_buf && raddr1_buf < SPRITE_1_START) ? sprite_0_data1_out :
-        //(SPRITE_1_START <= raddr1_buf && raddr1_buf < SPRITE_2_START) ? sprite_1_data1_out :
-        //(SPRITE_2_START <= raddr1_buf && raddr1_buf < SPRITE_3_START) ? sprite_2_data1_out :
-        //(SPRITE_3_START <= raddr1_buf && raddr1_buf < SPRITE_4_START) ? sprite_3_data1_out :
-        //(SPRITE_4_START <= raddr1_buf && raddr1_buf < SPRITE_5_START) ? sprite_4_data1_out :
-        //(SPRITE_5_START <= raddr1_buf && raddr1_buf < SPRITE_6_START) ? sprite_5_data1_out :
-        //(SPRITE_6_START <= raddr1_buf && raddr1_buf < SPRITE_7_START) ? sprite_6_data1_out :
-        //(SPRITE_7_START <= raddr1_buf && raddr1_buf < TILEMAP_START) ? sprite_7_data1_out :
 
         if (waddr < PS2_REG) begin
             if (wen[0]) ram[waddr[16:2]][7:0]   <= wdata[7:0];
@@ -445,7 +555,6 @@ module mem(input clk, input clk_en,
                     2: begin scroll_byte_addr = scroll_word_base + 18'd2; scroll_byte_data = wdata[23:16]; end
                     default: begin scroll_byte_addr = scroll_word_base + 18'd3; scroll_byte_data = wdata[31:24]; end
                 endcase
-
                 if (scroll_byte_addr == SCALE_REG)
                     scale_reg <= scroll_byte_data;
                 else if (scroll_byte_addr == HSCROLL_REG)
@@ -456,6 +565,16 @@ module mem(input clk, input clk_en,
                     vscroll_reg[7:0] <= scroll_byte_data;
                 else if (scroll_byte_addr == VSCROLL_REG + 18'd1)
                     vscroll_reg[15:8] <= scroll_byte_data;
+                if (scroll_byte_addr == SD_START_REG) begin
+                    sd_start_pending <= 1'b1;
+                    sd_irq_pending <= 1'b0;
+                end else if (SD_CMD_BASE <= scroll_byte_addr && scroll_byte_addr <= SD_CMD_END) begin
+                    sd_byte_offset = {6'b0, scroll_byte_addr[2:0]} - {6'b0, SD_CMD_BASE[2:0]};
+                    sd_cmd_buffer[sd_byte_offset[2:0]] <= scroll_byte_data;
+                end else if (SD_DATA_BASE <= scroll_byte_addr && scroll_byte_addr <= SD_DATA_END) begin
+                    sd_byte_offset = scroll_byte_addr[8:0];
+                    sd_data_buffer[sd_byte_offset] <= scroll_byte_data;
+                end
             end
         end
         if ((waddr[17:2] == UART_TX_REG[17:2]) && wen[waddr[1:0]]) begin

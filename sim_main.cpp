@@ -443,6 +443,288 @@ private:
     bool debug_ = false;
 };
 
+class SdCardSpiDevice {
+public:
+    void reset(Vdioptase &top) {
+        prev_clk_ = false;
+        prev_cs_ = true;
+        mode_ = Mode::Command;
+        cmd_byte_index_ = 0;
+        in_bit_index_ = 0;
+        out_bit_index_ = 0;
+        current_in_byte_ = 0;
+        current_out_byte_ = 0xFF;
+        write_bytes_received_ = 0;
+        crc_bytes_received_ = 0;
+        pending_block_ = 0;
+        awaiting_app_cmd_ = false;
+        idle_ = true;
+        initialized_ = false;
+        high_capacity_ = false;
+        out_fifo_.clear();
+        storage_.clear();
+        set_miso(top, true);
+    }
+
+    void tick(Vdioptase &top) {
+        const bool cs = top.sd_spi_cs != 0;
+        const bool clk = top.sd_spi_clk != 0;
+        const bool mosi = top.sd_spi_mosi != 0;
+
+        if (cs) {
+            if (!prev_cs_) {
+                mode_ = Mode::Command;
+                cmd_byte_index_ = 0;
+                in_bit_index_ = 0;
+                out_bit_index_ = 0;
+                current_in_byte_ = 0;
+                current_out_byte_ = 0xFF;
+                out_fifo_.clear();
+            }
+            set_miso(top, true);
+        } else {
+            if (prev_cs_) {
+                in_bit_index_ = 0;
+                cmd_byte_index_ = 0;
+                current_in_byte_ = 0;
+                out_bit_index_ = 0;
+                current_out_byte_ = 0xFF;
+                drive_next_bit(top);
+            }
+
+            if (prev_clk_ && !clk) {
+                drive_next_bit(top);
+            }
+
+            if (!prev_clk_ && clk) {
+                current_in_byte_ = static_cast<uint8_t>((current_in_byte_ << 1) | (mosi ? 1 : 0));
+                ++in_bit_index_;
+                if (in_bit_index_ == 8) {
+                    handle_received_byte(current_in_byte_);
+                    current_in_byte_ = 0;
+                    in_bit_index_ = 0;
+                }
+            }
+        }
+
+        prev_clk_ = clk;
+        prev_cs_ = cs;
+    }
+
+private:
+    enum class Mode {
+        Command,
+        DataToken,
+        DataBytes,
+        DataCrc,
+    };
+
+    static constexpr uint32_t kOcrBase = 0x00FF8000u;
+
+    void set_miso(Vdioptase &top, bool level) {
+        top.sd_spi_miso = level ? 1 : 0;
+    }
+
+    void drive_next_bit(Vdioptase &top) {
+        if (out_bit_index_ == 0) {
+            if (!out_fifo_.empty()) {
+                current_out_byte_ = out_fifo_.front();
+                out_fifo_.pop_front();
+            } else {
+                current_out_byte_ = 0xFF;
+            }
+        }
+
+        const int bit_pos = 7 - out_bit_index_;
+        const bool level = ((current_out_byte_ >> bit_pos) & 0x1) != 0;
+        set_miso(top, level);
+
+        out_bit_index_ = (out_bit_index_ + 1) & 7;
+        if (out_bit_index_ == 0 && out_fifo_.empty()) {
+            current_out_byte_ = 0xFF;
+        }
+    }
+
+    void enqueue_byte(uint8_t value) {
+        out_fifo_.push_back(value);
+    }
+
+    void enqueue_bytes(const uint8_t *data, size_t len) {
+        for (size_t i = 0; i < len; ++i) {
+            out_fifo_.push_back(data[i]);
+        }
+    }
+
+    uint8_t status_byte() const {
+        return idle_ ? 0x01 : 0x00;
+    }
+
+    uint32_t argument() const {
+        return (static_cast<uint32_t>(cmd_buffer_[1]) << 24) |
+               (static_cast<uint32_t>(cmd_buffer_[2]) << 16) |
+               (static_cast<uint32_t>(cmd_buffer_[3]) << 8) |
+               static_cast<uint32_t>(cmd_buffer_[4]);
+    }
+
+    void process_command() {
+        const uint8_t cmd = cmd_buffer_[0] & 0x3F;
+        const uint32_t arg = argument();
+
+        if (cmd != 55 && cmd != 41) {
+            awaiting_app_cmd_ = false;
+        }
+
+        switch (cmd) {
+        case 0: // CMD0
+            idle_ = true;
+            initialized_ = false;
+            high_capacity_ = false;
+            awaiting_app_cmd_ = false;
+            enqueue_byte(0x01);
+            break;
+        case 8: { // CMD8
+            const uint8_t status = status_byte();
+            enqueue_byte(status);
+            enqueue_byte(cmd_buffer_[1]);
+            enqueue_byte(cmd_buffer_[2]);
+            enqueue_byte(cmd_buffer_[3]);
+            enqueue_byte(cmd_buffer_[4]);
+            break;
+        }
+        case 55: // CMD55
+            awaiting_app_cmd_ = true;
+            enqueue_byte(status_byte());
+            break;
+        case 41: // ACMD41
+            if (!awaiting_app_cmd_) {
+                enqueue_byte(0x05);
+            } else {
+                awaiting_app_cmd_ = false;
+                initialized_ = true;
+                idle_ = false;
+                high_capacity_ = (arg & (1u << 30)) != 0;
+                enqueue_byte(status_byte());
+            }
+            break;
+        case 58: { // CMD58
+            const uint8_t status = status_byte();
+            uint32_t ocr = kOcrBase;
+            if (high_capacity_) {
+                ocr |= (1u << 30);
+            } else {
+                ocr &= ~(1u << 30);
+            }
+            enqueue_byte(status);
+            enqueue_byte(static_cast<uint8_t>((ocr >> 24) & 0xFF));
+            enqueue_byte(static_cast<uint8_t>((ocr >> 16) & 0xFF));
+            enqueue_byte(static_cast<uint8_t>((ocr >> 8) & 0xFF));
+            enqueue_byte(static_cast<uint8_t>(ocr & 0xFF));
+            break;
+        }
+        case 17: { // CMD17
+            if (!initialized_) {
+                enqueue_byte(0x05);
+                break;
+            }
+            if (!high_capacity_ && (arg & 0x1FF) != 0) {
+                enqueue_byte(0x05);
+                break;
+            }
+            const uint32_t block_idx = high_capacity_ ? arg : (arg >> 9);
+            auto &block = storage_[block_idx];
+            enqueue_byte(0x00);
+            enqueue_byte(0xFE);
+            enqueue_bytes(block.data(), block.size());
+            enqueue_byte(0xFF);
+            enqueue_byte(0xFF);
+            break;
+        }
+        case 24: { // CMD24
+            if (!initialized_) {
+                enqueue_byte(0x05);
+                break;
+            }
+            if (!high_capacity_ && (arg & 0x1FF) != 0) {
+                enqueue_byte(0x05);
+                break;
+            }
+            pending_block_ = high_capacity_ ? arg : (arg >> 9);
+            write_bytes_received_ = 0;
+            crc_bytes_received_ = 0;
+            mode_ = Mode::DataToken;
+            enqueue_byte(0x00);
+            break;
+        }
+        default:
+            enqueue_byte(0x05);
+            break;
+        }
+    }
+
+    void handle_received_byte(uint8_t value) {
+        switch (mode_) {
+        case Mode::Command:
+            if (cmd_byte_index_ == 0 && (value & 0x80) != 0) {
+                return;
+            }
+            cmd_buffer_[cmd_byte_index_++] = value;
+            if (cmd_byte_index_ == 6) {
+                cmd_byte_index_ = 0;
+                process_command();
+                if (mode_ != Mode::DataToken && mode_ != Mode::DataBytes && mode_ != Mode::DataCrc) {
+                    mode_ = Mode::Command;
+                }
+            }
+            break;
+        case Mode::DataToken:
+            if (value == 0xFE) {
+                mode_ = Mode::DataBytes;
+                write_bytes_received_ = 0;
+            }
+            break;
+        case Mode::DataBytes:
+            if (write_bytes_received_ < write_buffer_.size()) {
+                write_buffer_[write_bytes_received_++] = value;
+                if (write_bytes_received_ == write_buffer_.size()) {
+                    mode_ = Mode::DataCrc;
+                    crc_bytes_received_ = 0;
+                }
+            }
+            break;
+        case Mode::DataCrc:
+            ++crc_bytes_received_;
+            if (crc_bytes_received_ >= 2) {
+                storage_[pending_block_] = write_buffer_;
+                enqueue_byte(0x05);
+                enqueue_byte(0xFF);
+                mode_ = Mode::Command;
+                cmd_byte_index_ = 0;
+            }
+            break;
+        }
+    }
+
+    std::deque<uint8_t> out_fifo_;
+    bool prev_clk_ = false;
+    bool prev_cs_ = true;
+    Mode mode_ = Mode::Command;
+    uint8_t cmd_byte_index_ = 0;
+    uint8_t in_bit_index_ = 0;
+    uint8_t out_bit_index_ = 0;
+    uint8_t current_in_byte_ = 0;
+    uint8_t current_out_byte_ = 0xFF;
+    std::array<uint8_t, 6> cmd_buffer_{};
+    std::array<uint8_t, 512> write_buffer_{};
+    size_t write_bytes_received_ = 0;
+    uint8_t crc_bytes_received_ = 0;
+    uint32_t pending_block_ = 0;
+    bool awaiting_app_cmd_ = false;
+    bool idle_ = true;
+    bool initialized_ = false;
+    bool high_capacity_ = false;
+    std::unordered_map<uint32_t, std::array<uint8_t, 512>> storage_;
+};
+
 class SimPeripherals {
 public:
     explicit SimPeripherals(bool keyboard_via_uart)
@@ -487,6 +769,7 @@ public:
     void attach(Vdioptase &top) {
         ps2_.reset(top);
         uart_input_.reset(top);
+        sd_card_.reset(top);
         for (uint8_t sc : initial_ps2_scancodes_) {
             ps2_.enqueue_sequence(std::vector<uint8_t>{sc});
         }
@@ -502,10 +785,12 @@ public:
         keyboard_.poll();
         uart_input_.tick(top);
         ps2_.tick(top);
+        sd_card_.tick(top);
     }
 
     void after_posedge(Vdioptase &top) {
         uart_.after_posedge(top);
+        sd_card_.tick(top);
         if (uart_debug_) {
             const uint32_t reg_r5_cur = top.dioptase__DOT__cpu__DOT__decode__DOT__regfile__DOT__regfile[5];
             const uint8_t rx_count = static_cast<uint8_t>(top.dioptase__DOT__uart__DOT__rx_buf__DOT__count);
@@ -591,7 +876,9 @@ public:
         ps2_.tick(top);
     }
 
-    void after_cycle() {}
+    void after_cycle(Vdioptase &top) {
+        sd_card_.tick(top);
+    }
 
 private:
     KeyboardRoute keyboard_route_;
@@ -600,6 +887,7 @@ private:
     UartStimulus uart_input_;
     KeyboardInput keyboard_;
     UartConsole uart_;
+    SdCardSpiDevice sd_card_;
     bool pit_debug_ = false;
     bool pit_irq_prev_ = false;
     uint64_t total_cycles_ = 0;
@@ -703,7 +991,7 @@ private:
             return false;
         }
 
-        peripherals_.after_cycle();
+        peripherals_.after_cycle(top_);
 
         ++cycle_count_;
         if (max_cycles_ != 0 && cycle_count_ >= max_cycles_) {
@@ -769,7 +1057,7 @@ bool run_headless(Vdioptase &top, uint64_t max_cycles, bool keyboard_via_uart,
             return true;
         }
 
-        peripherals.after_cycle();
+        peripherals.after_cycle(top);
 
         ++cycles_executed;
         if (max_cycles != 0 && cycles_executed >= max_cycles) {
