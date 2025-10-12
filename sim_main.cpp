@@ -518,7 +518,7 @@ public:
                               << static_cast<int>(sample) << std::dec << std::setfill(' ') << std::endl;
                 }
                 if (prev_rx_count_ > 0 && rx_count == 0) {
-                    const uint32_t raddr0 = top.dioptase__DOT__mem__DOT__raddr0_buf;
+                    const uint32_t raddr0 = 0;
                     const uint32_t raddr1 = top.dioptase__DOT__mem__DOT__raddr1_buf;
                     const uint32_t rdata0 = top.dioptase__DOT__mem_read0_data;
                     const uint32_t rdata1 = top.dioptase__DOT__mem_read1_data;

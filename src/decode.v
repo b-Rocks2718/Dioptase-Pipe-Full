@@ -153,9 +153,29 @@ module decode(input clk, input clk_en,
       (priv_type == 5'd1) // cr mov
     );
 
+  wire [7:0]interrupt_exc = (interrupt_state != 0) ? (
+            interrupt_state[15] ? 8'hFF :
+            interrupt_state[14] ? 8'hFE :
+            interrupt_state[13] ? 8'hFD :
+            interrupt_state[12] ? 8'hFC :
+            interrupt_state[11] ? 8'hFB :
+            interrupt_state[10] ? 8'hFA :
+            interrupt_state[9] ? 8'hF9 :
+            interrupt_state[8] ? 8'hF8 :
+            interrupt_state[7] ? 8'hF7 :
+            interrupt_state[6] ? 8'hF6 :
+            interrupt_state[5] ? 8'hF5 :
+            interrupt_state[4] ? 8'hF4 :
+            interrupt_state[3] ? 8'hF3 :
+            interrupt_state[2] ? 8'hF2 :
+            interrupt_state[1] ? 8'hF1 :
+            interrupt_state[0] ? 8'hF0 :
+            8'h0
+            ) : 8'h0;
+
   always @(posedge clk) begin
-    if (~halt) begin
-      if (clk_en) begin
+    if (clk_en) begin
+      if (~halt) begin
         if (~stall) begin 
           opcode_out <= opcode;
           s_1_out <= s_1;
@@ -184,26 +204,8 @@ module decode(input clk, input clk_en,
         end
 
         if (~stall || misaligned) begin
-          exc_out <= (interrupt_state != 0) ? (
-            interrupt_state[15] ? 8'hFF :
-            interrupt_state[14] ? 8'hFE :
-            interrupt_state[13] ? 8'hFD :
-            interrupt_state[12] ? 8'hFC :
-            interrupt_state[11] ? 8'hFB :
-            interrupt_state[10] ? 8'hFA :
-            interrupt_state[9] ? 8'hF9 :
-            interrupt_state[8] ? 8'hF8 :
-            interrupt_state[7] ? 8'hF7 :
-            interrupt_state[6] ? 8'hF6 :
-            interrupt_state[5] ? 8'hF5 :
-            interrupt_state[4] ? 8'hF4 :
-            interrupt_state[3] ? 8'hF3 :
-            interrupt_state[2] ? 8'hF2 :
-            interrupt_state[1] ? 8'hF1 :
-            interrupt_state[0] ? 8'hF0 :
-            8'h0
-            ) 
-            : (exc_in != 0) ? exc_in : exc_priv_instr;
+          exc_out <= (interrupt_exc != 8'h0) ? interrupt_exc
+                    : (exc_in != 0) ? exc_in : exc_priv_instr;
         end
 
         // lol experimental programming W
@@ -212,6 +214,8 @@ module decode(input clk, input clk_en,
         end
         was_stall <= stall;
         was_was_stall <= was_stall;
+      end else begin
+        exc_out <= interrupt_exc;
       end
     end
   end

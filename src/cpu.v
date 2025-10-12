@@ -26,6 +26,8 @@ module pipelined_cpu(
 
     reg halt = 0;
     reg sleep = 0;
+    reg [31:0]sleep_pc = 32'd0;
+    reg sleep_interrupt_pending = 1'b0;
     wire halt_or_sleep = halt || sleep;
 
     counter ctr(halt, clk, ret_val);
@@ -144,6 +146,8 @@ module pipelined_cpu(
 
     wire is_misaligned;
 
+    wire [31:0]epc_source = sleep_interrupt_pending ? sleep_pc : mem_pc_out;
+
     decode decode(clk, clk_en, flush, halt_or_sleep,
       mem_out_0, fetch_b_bubble_out, fetch_b_pc_out,
       reg_we_1, mem_tgt_out_1, reg_write_data_1,
@@ -152,7 +156,7 @@ module pipelined_cpu(
       stall, is_misaligned,
       fetch_b_exc_out,
 
-      mem_pc_out, {28'b0, mem_flags_out}, {12'b0, mem_addr_out[31:12]},
+      epc_source, {28'b0, mem_flags_out}, {12'b0, mem_addr_out[31:12]},
       exc_in_wb, tlb_exc_in_wb, interrupts,
       interrupt_in_wb, rfe_in_wb, rfi_in_wb,
       clock_divider, pid, kmode, decode_exc_out,
@@ -270,6 +274,14 @@ module pipelined_cpu(
       if (clk_en) begin
         halt <= halt ? 1 : wb_halt;
         sleep <= sleep ? (interrupt_state == 32'b0) : exec_is_sleep_out;
+        if (exec_is_sleep_out) begin
+          sleep_pc <= decode_pc_out;
+        end
+        if (interrupt_in_wb) begin
+          sleep_interrupt_pending <= 1'b0;
+        end else if (sleep && interrupt_state != 32'b0) begin
+          sleep_interrupt_pending <= 1'b1;
+        end
       end
 
       if (clk_count >= clock_divider) begin

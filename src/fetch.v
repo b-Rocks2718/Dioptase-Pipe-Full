@@ -8,10 +8,12 @@ module fetch_a(input clk, input clk_en, input stall, input flush,
 
   reg [31:0]pc;
 
+  wire stall_fetch = stall && !interrupt && !rfe_in_wb;
+
   // -4 is a hack to save a cycle on branches
   assign fetch_addr = 
     branch ? branch_tgt : 
-    (stall ? pc - 32'h4 : pc);
+    (stall_fetch ? pc - 32'h4 : pc);
 
   initial begin
     bubble_out = 1;
@@ -21,7 +23,7 @@ module fetch_a(input clk, input clk_en, input stall, input flush,
 
   always @(posedge clk) begin
     if (clk_en) begin
-      if (!stall) begin
+      if (!stall_fetch) begin
         pc <= 
           interrupt ? interrupt_vector :
           rfe_in_wb ? epc : 
