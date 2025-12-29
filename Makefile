@@ -6,7 +6,7 @@ HEX_DIR					 := tests/hex
 OUT_DIR      		 := tests/out
 
 # Tools
-ASSEMBLER    := ../../Dioptase-Assembler/build/assembler
+ASSEMBLER    := ../../Dioptase-Assembler/build/basm
 EMULATOR     := ../../Dioptase-Emulators/Dioptase-Emulator-Full/target/release/Dioptase-Emulator-Full
 IVERILOG     := iverilog
 VVP          := vvp
@@ -86,7 +86,7 @@ test: $(ASM_SRCS) $(VERILOG_SRCS) | dirs
 	echo "Running $(words $(EMU_TESTS_SRCS)) instruction tests:"; \
 	for t in $(basename $(notdir $(EMU_TESTS_SRCS))); do \
 	  printf "%s %-20s " '-' "$$t"; \
-	  $(ASSEMBLER) $(EMU_TESTS_DIR)/$$t.s -o $(HEX_DIR)/$$t.hex && \
+	  $(ASSEMBLER) $(EMU_TESTS_DIR)/$$t.s -o $(HEX_DIR)/$$t.hex -kernel && \
 	  $(EMULATOR) $(EMULATOR_ARGS) $(HEX_DIR)/$$t.hex > $(OUT_DIR)/$$t.emuout && \
 	  $(VVP) sim.vvp +hex=$(HEX_DIR)/$$t.hex +vcd=$(OUT_DIR)/$$t.vcd +cycle_limit=$(CYCLE_LIMIT) 2>/dev/null \
   		| grep -v "VCD info:" > $(OUT_DIR)/$$t.vout ; \
@@ -100,7 +100,7 @@ test: $(ASM_SRCS) $(VERILOG_SRCS) | dirs
 	echo "Running $(words $(CPU_TESTS_SRCS)) pipeline tests:"; \
 	for t in $(basename $(notdir $(CPU_TESTS_SRCS))); do \
 	  printf "%s %-20s " '-' "$$t"; \
-	  $(ASSEMBLER) $(CPU_TESTS_DIR)/$$t.s -o $(HEX_DIR)/$$t.hex -nostart && \
+	  $(ASSEMBLER) $(CPU_TESTS_DIR)/$$t.s -o $(HEX_DIR)/$$t.hex -kernel && \
 	  $(EMULATOR) $(EMULATOR_ARGS) $(HEX_DIR)/$$t.hex > $(OUT_DIR)/$$t.emuout && \
 	  $(VVP) sim.vvp +hex=$(HEX_DIR)/$$t.hex +vcd=$(OUT_DIR)/$$t.vcd +cycle_limit=$(CYCLE_LIMIT) 2>/dev/null \
 		| grep -v "VCD info:" > $(OUT_DIR)/$$t.vout ; \
