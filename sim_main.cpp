@@ -813,7 +813,6 @@ public:
                     const uint8_t mem_is_load = top.rootp->dioptase__DOT__cpu__DOT__mem_is_load_out;
                     const uint8_t exec_is_load = top.rootp->dioptase__DOT__cpu__DOT__exec_is_load_out;
                     const uint32_t wb_res = top.rootp->dioptase__DOT__cpu__DOT__wb_result_out_1;
-                    const uint32_t masked_mem = top.rootp->dioptase__DOT__cpu__DOT__writeback__DOT__mem_result_buf;
                     const uint8_t mem_opcode = static_cast<uint8_t>(top.rootp->dioptase__DOT__cpu__DOT__mem_opcode_out);
                     std::cerr << "[uart] r5 now 0x" << std::hex << std::setw(8) << std::setfill('0')
                               << reg_r5_cur << " raddr0=0x" << std::setw(5) << raddr0
@@ -826,7 +825,6 @@ public:
                               << " mem_is_load=" << static_cast<int>(mem_is_load)
                               << " mem_opcode=" << static_cast<int>(mem_opcode)
                               << " wb_result=0x" << std::setw(8) << wb_res
-                              << " masked_mem=0x" << std::setw(8) << masked_mem
                               << std::dec << std::setfill(' ') << std::endl;
                 }
                 prev_rx_count_ = rx_count;

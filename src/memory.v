@@ -7,7 +7,7 @@ module memory(input clk, input clk_en, input halt,
 
     input [31:0]addr_in,
 
-    input is_load, input is_store, input is_misaligned,
+    input is_load, input is_store,
 
     input [31:0]exec_pc_out, input [7:0]exc_in,
     input tgts_cr, input [4:0]priv_type, input [1:0]crmov_mode_type,
@@ -19,7 +19,7 @@ module memory(input clk, input clk_en, input halt,
     output reg [4:0]opcode_out, output reg [31:0]addr_out,
     output reg bubble_out,
 
-    output reg is_load_out, output reg is_store_out, output reg is_misaligned_out,
+    output reg is_load_out, output reg is_store_out,
     output reg [31:0]mem_pc_out, output reg [7:0]exc_out,
     output reg tgts_cr_out, output reg [4:0]priv_type_out, output reg [1:0]crmov_mode_type_out,
     output reg [3:0]flags_out,
@@ -57,7 +57,6 @@ always @(posedge clk) begin
 
         is_load_out <= 1'b0;
         is_store_out <= 1'b0;
-        is_misaligned_out <= 1'b0;
       end else begin
       tgt_out_1 <= tgt_in_1;
       tgt_out_2 <= tgt_in_2;
@@ -79,7 +78,6 @@ always @(posedge clk) begin
 
       is_load_out <= is_load;
       is_store_out <= is_store;
-      is_misaligned_out <= is_misaligned;
       end
     end
   end

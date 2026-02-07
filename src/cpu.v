@@ -142,8 +142,6 @@ module pipelined_cpu(
 
     wire mem_tgts_cr_out;
 
-    wire is_misaligned;
-
     wire [31:0]epc_source = sleep_interrupt_pending ? sleep_pc : mem_pc_out;
 
     decode decode(clk, clk_en, flush, halt_or_sleep,
@@ -151,7 +149,7 @@ module pipelined_cpu(
       reg_we_1, mem_tgt_out_1, reg_write_data_1,
       reg_we_2, mem_tgt_out_2, reg_write_data_2,
       mem_tgts_cr_out,
-      stall, is_misaligned,
+      stall,
       fetch_b_exc_out,
 
       epc_source, {28'b0, mem_flags_out}, {12'b0, mem_addr_out[31:12]},
@@ -183,7 +181,6 @@ module pipelined_cpu(
 
     wire exec_is_load_out;
     wire exec_is_store_out;
-    wire exec_is_misaligned_out;
     
     assign curr_pc = decode_pc_out;
 
@@ -216,8 +213,8 @@ module pipelined_cpu(
       exec_result_out_1, exec_result_out_2,
       addr, mem_re, store_data, mem_we, exec_addr_out,
       exec_opcode_out, exec_tgt_out_1, exec_tgt_out_2, exec_bubble_out, 
-      branch, branch_tgt, flags, exec_flags_out, stall, is_misaligned,
-      exec_is_load_out, exec_is_store_out, exec_is_misaligned_out,
+      branch, branch_tgt, flags, exec_flags_out, stall,
+      exec_is_load_out, exec_is_store_out,
       exec_tgts_cr_out, exec_priv_type_out, exec_crmov_mode_type_out,
       exec_exc_out, exec_pc_out,
       exec_op1, exec_op2,
@@ -231,7 +228,6 @@ module pipelined_cpu(
     wire mem_bubble_out;
     wire mem_is_load_out;
     wire mem_is_store_out;
-    wire mem_is_misaligned_out;
 
     wire [7:0]mem_exc_out;
     wire [4:0]mem_priv_type_out;
@@ -240,7 +236,7 @@ module pipelined_cpu(
     memory memory(clk, clk_en, halt_or_sleep,
       exec_bubble_out, exec_opcode_out, exec_tgt_out_1, exec_tgt_out_2,
       exec_result_out_1, exec_result_out_2, exec_addr_out,
-      exec_is_load_out, exec_is_store_out, exec_is_misaligned_out,
+      exec_is_load_out, exec_is_store_out,
       exec_pc_out, exec_exc_out, exec_tgts_cr_out, exec_priv_type_out, 
       exec_crmov_mode_type_out, exec_flags_out, exec_op1_out, exec_op2_out,
       exc_in_wb, rfe_in_wb,
@@ -248,13 +244,13 @@ module pipelined_cpu(
       mem_tgt_out_1, mem_tgt_out_2, 
       mem_result_out_1, mem_result_out_2,
       mem_opcode_out, mem_addr_out, mem_bubble_out,
-      mem_is_load_out, mem_is_store_out, mem_is_misaligned_out,
+      mem_is_load_out, mem_is_store_out,
       mem_pc_out, mem_exc_out, mem_tgts_cr_out, mem_priv_type_out,
       mem_crmov_mode_type_out, mem_flags_out, mem_op1_out, mem_op2_out
       );
 
     writeback writeback(clk, clk_en, halt_or_sleep, mem_bubble_out, mem_tgt_out_1, mem_tgt_out_2,
-      mem_is_load_out, mem_is_store_out, mem_is_misaligned_out,
+      mem_is_load_out, mem_is_store_out,
       mem_opcode_out,
       mem_result_out_1, mem_result_out_2, mem_out_1, mem_addr_out,
       mem_exc_out, mem_tgts_cr_out, mem_priv_type_out, mem_crmov_mode_type_out,
