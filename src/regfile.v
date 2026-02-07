@@ -23,8 +23,10 @@ module regfile(input clk, input clk_en,
     if (wen0) begin
         regfile[waddr0] <= wdata0;
     end
-    if (wen1 && waddr0 != waddr1) begin // load data takes precedence over address
-        // 2nd write port used for pre/post increment memory operations
+    if (wen1) begin
+        // 2nd write port is used for pre/post increment memory operations.
+        // If both write ports target the same register in one cycle, keep
+        // the address update so post-increment remains architecturally visible.
         regfile[waddr1] <= wdata1;
     end
 

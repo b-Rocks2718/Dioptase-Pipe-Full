@@ -79,6 +79,7 @@ module mem(input clk, input clk_en,
             $display("ERROR: no +hex=<file> argument given!");
             $finish;
         end
+
         $readmemh(hexfile, ram);  // mem is your instruction/data memory
 
         for (i = 0; i < 16'h200; i = i + 1) begin

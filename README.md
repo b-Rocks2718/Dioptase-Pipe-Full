@@ -4,12 +4,12 @@ Pipeline implementation of [Dioptase-Emulator-Full](https://github.com/b-Rocks27
 
 9 stage pipeline
 
-- TLB fetch // not yet added
+- TLB fetch
 - fetch a
 - fetch b
 - decode
 - execute
-- TLB memory // not yet added
+- TLB memory
 - memory a
 - memory b
 - writeback

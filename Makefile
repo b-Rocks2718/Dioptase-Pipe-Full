@@ -43,7 +43,8 @@ EMU_TESTS_EXCLUDE := $(EMU_TESTS_DIR)/cdiv.s $(EMU_TESTS_DIR)/colors.s \
 											$(EMU_TESTS_DIR)/multicore_colors.s $(EMU_TESTS_DIR)/pixels.s \
 											$(EMU_TESTS_DIR)/vblank.s $(EMU_TESTS_DIR)/tile_colors.s \
 											$(EMU_TESTS_DIR)/multicore_atomic.s $(EMU_TESTS_DIR)/multicore_ipi.s \
-											$(EMU_TESTS_DIR)/multicore_race.s
+											$(EMU_TESTS_DIR)/multicore_race.s \
+											$(EMU_TESTS_DIR)/sdcard.s $(EMU_TESTS_DIR)/sdcard1.s
 EMU_TESTS_SRCS    := $(filter-out $(EMU_TESTS_EXCLUDE),$(EMU_TESTS_ALL))
 EMU_TESTS_SRCS_ICARUS := $(filter-out $(SDCARD_TEST),$(EMU_TESTS_SRCS))
 ASM_SRCS         := $(CPU_TESTS_SRCS) $(EMU_TESTS_SRCS)

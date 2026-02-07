@@ -6,9 +6,8 @@ module tlb(input clk, input clk_en,
   input we, input [31:0]write_data, input [7:0]exc_in, input clear,
   input bubble1, input stall, 
 
-  output [7:0]exc_out0, output [7:0]exc_out1,
-  output [17:0]addr0_out, output [17:0]addr1_out, output [5:0]read_addr_out
-
+  output reg [7:0]exc_out0, output reg [7:0]exc_out1,
+  output reg [17:0]addr0_out, output reg [17:0]addr1_out, output reg [5:0]read_addr_out
 );
   // pid (12 bits) | addr (20 bits)
 
@@ -27,6 +26,12 @@ module tlb(input clk, input clk_en,
       cache[6] = 39'b0;
       cache[7] = 39'b0;
     end
+
+    exc_out0 = 8'd0;
+    exc_out1 = 8'd0;
+    addr0_out = 18'd0;
+    addr1_out = 18'd0;
+    read_addr_out = 6'd0;
   end
 
   reg [2:0]eviction_tgt = 3'b0;
@@ -36,20 +41,6 @@ module tlb(input clk, input clk_en,
 
   wire is_bottom_addr0 = addr0 < 18'h30000;
   wire is_bottom_addr1 = addr1 < 18'h30000;
-
-  assign exc_out0 = (addr0_index == 4'hf && !(is_bottom_addr0 && kmode)) ? 
-    // tlb miss exception
-    ( kmode ? 8'h83 : // kmiss
-              8'h82   // umiss
-    ) : 8'd0;
-
-  assign exc_out1 = 
-  (exc_in != 8'd0) ? exc_in : (
-  (addr1_index == 4'hf  && !(is_bottom_addr1 && kmode) && !bubble1) ? 
-    // tlb miss exception
-    ( kmode ? 8'h83 : // kmiss
-              8'h82   // umiss
-    ) : 8'd0);
 
   wire is_exc = exc_out1 != 8'd0;
 
@@ -64,17 +55,6 @@ module tlb(input clk, input clk_en,
     (key0 == cache[7][37:6] && cache[7][38]) ? 4'h7 :
     4'hf;
 
-  assign addr0_out = (is_bottom_addr0 && kmode) ? addr0[17:0] :
-    {((addr0_index == 4'd0) ? cache[0][5:0] :
-    (addr0_index == 4'd1) ? cache[1][5:0] :
-    (addr0_index == 4'd2) ? cache[2][5:0] :
-    (addr0_index == 4'd3) ? cache[3][5:0] :
-    (addr0_index == 4'd4) ? cache[4][5:0] :
-    (addr0_index == 4'd5) ? cache[5][5:0] :
-    (addr0_index == 4'd6) ? cache[6][5:0] :
-    (addr0_index == 4'd7) ? cache[7][5:0] :
-    6'd0), addr0[11:0]};
-
   wire [3:0]addr1_index = 
     (key1 == cache[0][37:6] && cache[0][38]) ? 4'h0 :
     (key1 == cache[1][37:6] && cache[1][38]) ? 4'h1 :
@@ -86,19 +66,6 @@ module tlb(input clk, input clk_en,
     (key1 == cache[7][37:6] && cache[7][38]) ? 4'h7 :
     4'hf;
 
-  assign addr1_out =
-    is_exc ? {8'b0, exc_out1, 2'b0} : 
-    (is_bottom_addr1 && kmode) ? addr1[17:0] :
-    {((addr1_index == 4'd0) ? cache[0][5:0] :
-    (addr1_index == 4'd1) ? cache[1][5:0] :
-    (addr1_index == 4'd2) ? cache[2][5:0] :
-    (addr1_index == 4'd3) ? cache[3][5:0] :
-    (addr1_index == 4'd4) ? cache[4][5:0] :
-    (addr1_index == 4'd5) ? cache[5][5:0] :
-    (addr1_index == 4'd6) ? cache[6][5:0] :
-    (addr1_index == 4'd7) ? cache[7][5:0] :
-    6'd0), addr1[11:0]};
-
   wire [3:0]addr2_index = 
     (read_addr == cache[0][37:6] && cache[0][38]) ? 4'h0 :
     (read_addr == cache[1][37:6] && cache[1][38]) ? 4'h1 :
@@ -109,17 +76,6 @@ module tlb(input clk, input clk_en,
     (read_addr == cache[6][37:6] && cache[6][38]) ? 4'h6 :
     (read_addr == cache[7][37:6] && cache[7][38]) ? 4'h7 :
     4'hf;
-
-  assign read_addr_out = 
-    (addr2_index == 4'd0) ? cache[0][5:0] :
-    (addr2_index == 4'd1) ? cache[1][5:0] :
-    (addr2_index == 4'd2) ? cache[2][5:0] :
-    (addr2_index == 4'd3) ? cache[3][5:0] :
-    (addr2_index == 4'd4) ? cache[4][5:0] :
-    (addr2_index == 4'd5) ? cache[5][5:0] :
-    (addr2_index == 4'd6) ? cache[6][5:0] :
-    (addr2_index == 4'd7) ? cache[7][5:0] :
-    6'd0;
 
   always @(posedge clk) begin
     if (clk_en) begin
@@ -136,6 +92,55 @@ module tlb(input clk, input clk_en,
         cache[6] <= 39'b0;
         cache[7] <= 39'b0;
       end
+
+      exc_out0 <= (addr0_index == 4'hf && !(is_bottom_addr0 && kmode)) ? 
+        // tlb miss exception
+        ( kmode ? 8'h83 : // kmiss
+                  8'h82   // umiss
+        ) : 8'd0;
+
+      exc_out1 <= 
+        (exc_in != 8'd0) ? exc_in : (
+        (addr1_index == 4'hf  && !(is_bottom_addr1 && kmode) && !bubble1) ? 
+          // tlb miss exception
+          ( kmode ? 8'h83 : // kmiss
+                    8'h82   // umiss
+          ) : 8'd0);
+
+      addr0_out <= (is_bottom_addr0 && kmode) ? addr0[17:0] :
+        {((addr0_index == 4'd0) ? cache[0][5:0] :
+        (addr0_index == 4'd1) ? cache[1][5:0] :
+        (addr0_index == 4'd2) ? cache[2][5:0] :
+        (addr0_index == 4'd3) ? cache[3][5:0] :
+        (addr0_index == 4'd4) ? cache[4][5:0] :
+        (addr0_index == 4'd5) ? cache[5][5:0] :
+        (addr0_index == 4'd6) ? cache[6][5:0] :
+        (addr0_index == 4'd7) ? cache[7][5:0] :
+        6'd0), addr0[11:0]};
+
+      addr1_out <=
+        is_exc ? {8'b0, exc_out1, 2'b0} : 
+        (is_bottom_addr1 && kmode) ? addr1[17:0] :
+        {((addr1_index == 4'd0) ? cache[0][5:0] :
+        (addr1_index == 4'd1) ? cache[1][5:0] :
+        (addr1_index == 4'd2) ? cache[2][5:0] :
+        (addr1_index == 4'd3) ? cache[3][5:0] :
+        (addr1_index == 4'd4) ? cache[4][5:0] :
+        (addr1_index == 4'd5) ? cache[5][5:0] :
+        (addr1_index == 4'd6) ? cache[6][5:0] :
+        (addr1_index == 4'd7) ? cache[7][5:0] :
+        6'd0), addr1[11:0]};
+
+      read_addr_out <= 
+        (addr2_index == 4'd0) ? cache[0][5:0] :
+        (addr2_index == 4'd1) ? cache[1][5:0] :
+        (addr2_index == 4'd2) ? cache[2][5:0] :
+        (addr2_index == 4'd3) ? cache[3][5:0] :
+        (addr2_index == 4'd4) ? cache[4][5:0] :
+        (addr2_index == 4'd5) ? cache[5][5:0] :
+        (addr2_index == 4'd6) ? cache[6][5:0] :
+        (addr2_index == 4'd7) ? cache[7][5:0] :
+        6'd0;
     end
   end
 

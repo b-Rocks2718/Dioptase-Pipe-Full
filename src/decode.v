@@ -36,9 +36,19 @@ module decode(input clk, input clk_en,
   reg was_stall;
   reg was_was_stall;
 
+  wire use_buf = was_stall;
   wire [31:0]instr_in;
+  wire [31:0]pc_decode_in;
+  wire bubble_decode_in;
+  wire [7:0]exc_decode_in;
   reg [31:0]instr_buf;
-  assign instr_in = (was_stall || was_was_stall) ? instr_buf : mem_out_0;
+  reg [31:0]pc_buf;
+  reg bubble_buf;
+  reg [7:0]exc_buf;
+  assign instr_in = use_buf ? instr_buf : mem_out_0;
+  assign pc_decode_in = use_buf ? pc_buf : pc_in;
+  assign bubble_decode_in = use_buf ? bubble_buf : bubble_in;
+  assign exc_decode_in = use_buf ? exc_buf : exc_in;
 
   wire [4:0]opcode = instr_in[31:27];
 
@@ -90,7 +100,7 @@ module decode(input clk, input clk_en,
 
   wire invalid_priv = is_priv && !kmode;
 
-  wire [7:0]exc_priv_instr = bubble_in ? 8'h0 : (
+  wire [7:0]exc_priv_instr = bubble_decode_in ? 8'h0 : (
     invalid_instr ? 8'h80 :
     invalid_priv ? 8'h81 : 
     is_syscall ? exc_code :
@@ -103,6 +113,8 @@ module decode(input clk, input clk_en,
 
   // possibility of making two writes to regfile (pre/postincremnt)
   wire is_absolute_mem = opcode == 5'd3 || opcode == 5'd6 || opcode == 5'd9;
+  wire alias_postinc_load = is_absolute_mem && (increment_type == 2'd2) &&
+    is_load && (r_a == r_b);
 
   // some instructions don't read from r_b
   wire [4:0]s_1 = (opcode == 5'd2 || opcode == 5'd5 || opcode == 5'd8
@@ -167,6 +179,9 @@ module decode(input clk, input clk_en,
     was_stall = 1'b0;
     was_was_stall = 1'b0;
     instr_buf = 32'd0;
+    pc_buf = 32'd0;
+    bubble_buf = 1'b1;
+    exc_buf = 8'd0;
   end
 
   wire priv_instr_tgts_ra = 
@@ -199,43 +214,51 @@ module decode(input clk, input clk_en,
     if (clk_en) begin
       if (~halt) begin
         if (~stall) begin 
-          opcode_out <= opcode;
-          s_1_out <= s_1;
-          s_2_out <= s_2;
-          cr_s_out <= r_b;
+          opcode_out <= (flush || bubble_decode_in) ? 5'd0 : opcode;
+          s_1_out <= (flush || bubble_decode_in) ? 5'd0 : s_1;
+          s_2_out <= (flush || bubble_decode_in) ? 5'd0 : s_2;
+          cr_s_out <= (flush || bubble_decode_in) ? 5'd0 : r_b;
 
-          tgt_out_1 <= (flush || bubble_in || is_store) ? 5'b0 : r_a;
-          tgt_out_2 <= (flush || bubble_in || !is_absolute_mem || increment_type == 2'd0) ? 5'b0 : r_b;
+          tgt_out_1 <= (flush || bubble_decode_in || is_store || alias_postinc_load) ? 5'b0 : r_a;
+          tgt_out_2 <= (flush || bubble_decode_in || !is_absolute_mem || increment_type == 2'd0) ? 5'b0 : r_b;
 
-          imm_out <= imm;
-          branch_code_out <= branch_code;
-          alu_op_out <= alu_op;
-          bubble_out <= flush ? 1 : bubble_in;
-          pc_out <= pc_in;
+          imm_out <= (flush || bubble_decode_in) ? 32'd0 : imm;
+          branch_code_out <= (flush || bubble_decode_in) ? 5'd0 : branch_code;
+          alu_op_out <= (flush || bubble_decode_in) ? 5'd0 : alu_op;
+          bubble_out <= flush ? 1 : bubble_decode_in;
+          pc_out <= pc_decode_in;
       
-          is_load_out <= is_load;
-          is_store_out <= is_store;
-          is_branch_out <= is_branch;
+          is_load_out <= (flush || bubble_decode_in) ? 1'b0 : is_load;
+          is_store_out <= (flush || bubble_decode_in) ? 1'b0 : is_store;
+          is_branch_out <= (flush || bubble_decode_in) ? 1'b0 : is_branch;
           is_post_inc_out <= is_absolute_mem && increment_type == 2;
-          crmov_mode_type_out <= crmov_mode_type;
-          priv_type_out <= priv_type;
-          tgts_cr_out <= tgts_cr;
+          crmov_mode_type_out <= (flush || bubble_decode_in) ? 2'd0 : crmov_mode_type;
+          priv_type_out <= (flush || bubble_decode_in) ? 5'd0 : priv_type;
+          tgts_cr_out <= (flush || bubble_decode_in) ? 1'b0 : tgts_cr;
 
-          tlb_we <= (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd1);
-          tlbc   <= (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd2);
+          tlb_we <= (!flush && !bubble_decode_in) &&
+            (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd1);
+          tlbc   <= (!flush && !bubble_decode_in) &&
+            (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd2);
         end
 
         if (~stall) begin
           exc_out <= (interrupt_exc != 8'h0) ? interrupt_exc
-                    : (exc_in != 0) ? exc_in : exc_priv_instr;
+                    : (exc_decode_in != 0) ? exc_decode_in : exc_priv_instr;
         end
 
-        // lol experimental programming W
-        if (!(stall && was_stall)) begin
+        // Preserve the buffered instruction across the replay window after
+        // a stall. Still allow capture on the first cycle stall asserts
+        // so the stalled instruction is available for replay.
+        if (!was_stall) begin
           instr_buf <= mem_out_0;
+          pc_buf <= pc_in;
+          bubble_buf <= bubble_in;
+          exc_buf <= exc_in;
         end
         was_stall <= stall;
         was_was_stall <= was_stall;
+
       end else begin
         exc_out <= interrupt_exc;
       end

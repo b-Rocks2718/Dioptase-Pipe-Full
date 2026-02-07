@@ -5,13 +5,15 @@ module execute(input clk, input clk_en, input halt,
     input [4:0]opcode, input [4:0]s_1, input [4:0]s_2, input [4:0]cr_s,
     input [4:0]tgt_1, input [4:0]tgt_2, 
     input [4:0]alu_op, input [31:0]imm, input [4:0]branch_code,
-    
+
+    input [4:0]tlb_mem_tgt_1, input [4:0]tlb_mem_tgt_2,
     input [4:0]mem_a_tgt_1, input [4:0]mem_a_tgt_2,
     input [4:0]mem_b_tgt_1, input [4:0]mem_b_tgt_2,
     input [4:0]wb_tgt_1, input [4:0]wb_tgt_2,
     
     input [31:0]reg_out_1, input [31:0]reg_out_2, input [31:0]reg_out_cr,
 
+    input [31:0]tlb_mem_result_out_1, input [31:0]tlb_mem_result_out_2,
     input [31:0]mem_a_result_out_1, input [31:0]mem_a_result_out_2,
     input [31:0]mem_b_result_out_1, input [31:0]mem_b_result_out_2,
     input [31:0]wb_result_out_1, input [31:0]wb_result_out_2,
@@ -22,11 +24,12 @@ module execute(input clk, input clk_en, input halt,
     input [4:0]mem_b_opcode_out,
 
     input is_load, input is_store, input is_branch, 
-    input mem_a_bubble, input mem_a_load, input mem_b_bubble, input mem_b_load,
+    input tlb_mem_bubble, input tlb_mem_is_load,
+    input mem_a_bubble, input mem_a_load, 
+    input mem_b_bubble, input mem_b_load,
     input is_post_inc, input tgts_cr,
     input [4:0]priv_type, input [1:0]crmov_mode_type,
     input [7:0]exc_in, input exc_in_wb, input [31:0]flags_restore, input rfe_in_wb,
-    input [5:0]tlb_read, input [7:0]tlb_exc_in,
 
     output reg [31:0]result_1, output reg [31:0]result_2,
     output reg [31:0]addr, output reg mem_re, output reg [31:0]store_data, output reg [3:0]we,
@@ -39,7 +42,7 @@ module execute(input clk, input clk_en, input halt,
 
     output stall,
 
-    output reg is_load_out, output reg is_store_out,
+    output reg is_load_out, output reg is_store_out, output reg is_tlbr_out,
     output reg tgts_cr_out, output reg [4:0]priv_type_out, output reg [1:0]crmov_mode_type_out,
     output reg [7:0]exc_out, output reg [31:0]pc_out,
     output [31:0]op1, output [31:0]op2,
@@ -63,10 +66,14 @@ module execute(input clk, input clk_en, input halt,
     result_1 = 32'd0;
     result_2 = 32'd0;
     addr = 32'd0;
+    mem_re = 1'b0;
+    store_data = 32'd0;
+    we = 4'd0;
     opcode_out = 5'd0;
     flags_out = 4'd0;
     is_load_out = 1'b0;
     is_store_out = 1'b0;
+    is_tlbr_out = 1'b0;
     tgts_cr_out = 1'b0;
     priv_type_out = 5'd0;
     crmov_mode_type_out = 2'd0;
@@ -94,6 +101,8 @@ module execute(input clk, input clk_en, input halt,
   assign op1 = 
     (tgt_out_1 == s_1 && s_1 != 5'b0) ? result_1 :
     (tgt_out_2 == s_1 && s_1 != 5'b0) ? result_2 :
+    (tlb_mem_tgt_1 == s_1 && s_1 != 5'b0) ? tlb_mem_result_out_1 :
+    (tlb_mem_tgt_2 == s_1 && s_1 != 5'b0) ? tlb_mem_result_out_2 :
     (mem_a_tgt_1 == s_1 && s_1 != 5'b0) ? mem_a_result_out_1 : 
     (mem_a_tgt_2 == s_1 && s_1 != 5'b0) ? mem_a_result_out_2 : 
     (mem_b_tgt_1 == s_1 && s_1 != 5'b0) ? mem_b_result_out_1 :
@@ -109,6 +118,8 @@ module execute(input clk, input clk_en, input halt,
   assign op2 = 
     (tgt_out_1 == s_2 && s_2 != 5'b0) ? result_1 :
     (tgt_out_2 == s_2 && s_2 != 5'b0) ? result_2 :
+    (tlb_mem_tgt_1 == s_2 && s_2 != 5'b0) ? tlb_mem_result_out_1 :
+    (tlb_mem_tgt_2 == s_2 && s_2 != 5'b0) ? tlb_mem_result_out_2 :
     (mem_a_tgt_1 == s_2 && s_2 != 5'b0) ? mem_a_result_out_1 : 
     (mem_a_tgt_2 == s_2 && s_2 != 5'b0) ? mem_a_result_out_2 : 
     (mem_b_tgt_1 == s_2 && s_2 != 5'b0) ? mem_b_result_out_1 :
@@ -123,15 +134,24 @@ module execute(input clk, input clk_en, input halt,
 
   // TODO: account for cr mov instructions
   assign stall = !exc_in_wb && !rfe_in_wb && (
-   // dependencies on a lw can cause stalls
+   // Dependencies on a load or tlbr must stall until a forwardable value exists.
+   // With the dedicated tlb_memory stage, load data is not available until writeback.
    ((((tgt_out_1 == s_1 ||
      tgt_out_1 == s_2) &&
      tgt_out_1 != 5'd0) || 
      ((tgt_out_2 == s_1 ||
      tgt_out_2 == s_2) &&
      tgt_out_2 != 5'd0)) &&
-     is_load_out && 
+     (is_load_out || is_tlbr_out) && 
      !bubble_in && !bubble_out) ||
+  ((((tlb_mem_tgt_1 == s_1 ||
+     tlb_mem_tgt_1 == s_2) &&
+     tlb_mem_tgt_1 != 5'd0) ||
+     ((tlb_mem_tgt_2 == s_1 ||
+     tlb_mem_tgt_2 == s_2) &&
+     tlb_mem_tgt_2 != 5'd0)) &&
+     tlb_mem_is_load &&
+     !bubble_in && !tlb_mem_bubble) ||
   ((((mem_a_tgt_1 == s_1 ||
      mem_a_tgt_1 == s_2) &&
      mem_a_tgt_1 != 5'd0) || 
@@ -198,78 +218,83 @@ module execute(input clk, input clk_en, input halt,
     4'h0;
 
 always @(posedge clk) begin
-    if (clk_en) begin
+  if (clk_en) begin
         if (halt) begin
-            result_1 <= 32'd0;
-            result_2 <= 32'd0;
-            tgt_out_1 <= 5'd0;
-            tgt_out_2 <= 5'd0;
-            opcode_out <= 5'd0;
-            bubble_out <= 1'b1;
-            addr <= 32'd0;
+      result_1 <= 32'd0;
+      result_2 <= 32'd0;
+      tgt_out_1 <= 5'd0;
+      tgt_out_2 <= 5'd0;
+      opcode_out <= 5'd0;
+      bubble_out <= 1'b1;
+      addr <= 32'd0;
+      mem_re <= 1'b0;
+      store_data <= 32'd0;
+      we <= 4'd0;
 
-            is_load_out <= 1'b0;
-            is_store_out <= 1'b0;
-            tgts_cr_out <= 1'b0;
-            priv_type_out <= 5'd0;
-            crmov_mode_type_out <= 2'd0;
+      is_load_out <= 1'b0;
+      is_store_out <= 1'b0;
+      is_tlbr_out <= 1'b0;
+      tgts_cr_out <= 1'b0;
+      priv_type_out <= 5'd0;
+      crmov_mode_type_out <= 2'd0;
 
-            exc_out <= 8'd0;
+      exc_out <= 8'd0;
 
-            pc_out <= decode_pc_out;
-            op1_out <= 32'd0;
-            op2_out <= 32'd0;
+      pc_out <= decode_pc_out;
+      op1_out <= 32'd0;
+      op2_out <= 32'd0;
 
-            flags_out <= 4'd0;
+      flags_out <= 4'd0;
 
-            reg_tgt_buf_a_1 <= 5'd0;
-            reg_tgt_buf_a_2 <= 5'd0;
-            reg_data_buf_a_1 <= 32'd0;
-            reg_data_buf_a_2 <= 32'd0;
-            tgts_cr_buf_a <= 1'b0;
-            reg_tgt_buf_b_1 <= 5'd0;
-            reg_tgt_buf_b_2 <= 5'd0;
-            reg_data_buf_b_1 <= 32'd0;
-            reg_data_buf_b_2 <= 32'd0;
-            tgts_cr_buf_b <= 1'b0;
-        end else begin
-                  // jump and link
-      result_1 <= (opcode == 5'd13 || opcode == 5'd14) ? decode_pc_out + 32'd4 : 
+      reg_tgt_buf_a_1 <= 5'd0;
+      reg_tgt_buf_a_2 <= 5'd0;
+      reg_data_buf_a_1 <= 32'd0;
+      reg_data_buf_a_2 <= 32'd0;
+      tgts_cr_buf_a <= 1'b0;
+      reg_tgt_buf_b_1 <= 5'd0;
+      reg_tgt_buf_b_2 <= 5'd0;
+      reg_data_buf_b_1 <= 32'd0;
+      reg_data_buf_b_2 <= 32'd0;
+      tgts_cr_buf_b <= 1'b0;
+    end else begin
+              // jump and link
+      result_1 <= bubble_in ? 32'd0 :
+                  (opcode == 5'd13 || opcode == 5'd14) ? decode_pc_out + 32'd4 : 
                   // crmov reading from control reg
                   (opcode == 5'd31 && priv_type == 5'd1 && crmov_mode_type >= 2'd1) ? reg_out_cr :
                   // crmov reading from normal reg
                   (opcode == 5'd31 && priv_type == 5'd1 && crmov_mode_type == 2'd0) ? op1 :
-                  // tlbr
-                  (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd0) ? {26'b0, tlb_read} :
                   // everything else
                   alu_rslt;
 
-      result_2 <= alu_rslt;
-      tgt_out_1 <= (exc_in_wb || rfe_in_wb || stall) ? 5'd0 : tgt_1;
-      tgt_out_2 <= (exc_in_wb || rfe_in_wb || stall) ? 5'd0 : tgt_2;
-      opcode_out <= opcode;
+      result_2 <= bubble_in ? 32'd0 : alu_rslt;
+      tgt_out_1 <= (bubble_in || exc_in_wb || rfe_in_wb || stall) ? 5'd0 : tgt_1;
+      tgt_out_2 <= (bubble_in || exc_in_wb || rfe_in_wb || stall) ? 5'd0 : tgt_2;
+      opcode_out <= bubble_in ? 5'd0 : opcode;
       bubble_out <= (exc_in_wb || rfe_in_wb || stall || halt) ? 1 : bubble_in;
 
       addr <= mem_addr;
       mem_re <= is_load && !bubble_in && !exc_in_wb 
                 && !rfe_in_wb && (exc_out == 8'd0) && !stall;
-      store_data <= store_data_next;
-      we <= we_next;
+      store_data <= bubble_in ? 32'd0 : store_data_next;
+      we <= bubble_in ? 4'd0 : we_next;
 
-      is_load_out <= is_load;
-      is_store_out <= is_store;
-      tgts_cr_out <= tgts_cr;
-      priv_type_out <= priv_type;
-      crmov_mode_type_out <= crmov_mode_type;
+      is_load_out <= bubble_in ? 1'b0 : is_load;
+      is_store_out <= bubble_in ? 1'b0 : is_store;
+      tgts_cr_out <= bubble_in ? 1'b0 : tgts_cr;
+      priv_type_out <= bubble_in ? 5'd0 : priv_type;
+      crmov_mode_type_out <= bubble_in ? 2'd0 : crmov_mode_type;
 
-      exc_out <= bubble_in ? 8'h0 : 
-              (tlb_exc_in != 8'h0) ? tlb_exc_in : exc_in;
+      exc_out <= bubble_in ? 8'h0 : exc_in;
 
       pc_out <= decode_pc_out;
-      op1_out <= op1;
-      op2_out <= op2;
+      op1_out <= bubble_in ? 32'd0 : op1;
+      op2_out <= bubble_in ? 32'd0 : op2;
 
-      flags_out <= flags;
+      flags_out <= bubble_in ? 4'd0 : flags;
+
+      is_tlbr_out <= !bubble_in &&
+        (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd0);
 
       if (stall) begin
         reg_tgt_buf_a_1 <= stall ? wb_tgt_1 : 0;
@@ -283,8 +308,8 @@ always @(posedge clk) begin
         reg_data_buf_b_2 <= reg_data_buf_a_2;
         tgts_cr_buf_b <= tgts_cr_buf_a;
       end
-        end
     end
+  end
 end
 
   wire taken;
