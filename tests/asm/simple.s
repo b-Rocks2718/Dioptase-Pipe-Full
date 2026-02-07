@@ -1,4 +1,7 @@
-  .kernel
+  .origin 0x400
+
+  # register EXIT handler
+  
 
   add  r5 r0 10
   add  r7 r0 11

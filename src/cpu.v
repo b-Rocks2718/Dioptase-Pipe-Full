@@ -253,8 +253,6 @@ module pipelined_cpu(
       mem_crmov_mode_type_out, mem_flags_out, mem_op1_out, mem_op2_out
       );
 
-    assign curr_pc = mem_pc_out;
-
     writeback writeback(clk, clk_en, halt_or_sleep, mem_bubble_out, mem_tgt_out_1, mem_tgt_out_2,
       mem_is_load_out, mem_is_store_out, mem_is_misaligned_out,
       mem_opcode_out,

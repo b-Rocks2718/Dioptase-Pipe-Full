@@ -1,5 +1,5 @@
 # test a bunch of dependencies
-  .kernel
+  .origin 0x400
 _start:
   lw r1 [A]
   lwa r4 [r1] # should load second instruction (this instruction)

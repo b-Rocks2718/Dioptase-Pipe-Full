@@ -15,9 +15,9 @@ module regfile(input clk, input clk_en,
       regfile[i] = 32'd0;
   end
 
-  // compiler puts return value in r3
+  // compiler puts return value in r1
   // expose it here to allow for testing
-  assign ret_val = regfile[3];
+  assign ret_val = regfile[1];
 
   always @(posedge clk) begin
     if (wen0) begin

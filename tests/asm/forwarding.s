@@ -1,4 +1,4 @@
-  .kernel
+  .origin 0x400
 # test a bunch of dependencies
 _start:
   movi r10, 100

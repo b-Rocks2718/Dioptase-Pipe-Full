@@ -21,6 +21,7 @@
 #include <gtkmm/main.h>
 
 #include "Vdioptase.h"
+#include "Vdioptase___024root.h"
 #include "verilated.h"
 
 #include "extern/vgasim/bench/cpp/vgasim.h"
@@ -411,19 +412,19 @@ public:
     UartConsole() : debug_(std::getenv("UART_DEBUG") != nullptr) {}
 
     void after_posedge(Vdioptase &top) {
-        const uint8_t write_ptr = static_cast<uint8_t>(top.dioptase__DOT__uart__DOT__tx_buf__DOT__write_ptr);
+        const uint8_t write_ptr = static_cast<uint8_t>(top.rootp->dioptase__DOT__uart__DOT__tx_buf__DOT__write_ptr);
 
         if (!initialized_) {
             prev_write_ptr_ = write_ptr;
             initialized_ = true;
         } else if (write_ptr != prev_write_ptr_) {
-            const char ch = static_cast<char>(top.dioptase__DOT__uart_tx_data);
+            const char ch = static_cast<char>(top.rootp->dioptase__DOT__uart_tx_data);
             std::cout << ch << std::flush;
             if (debug_) {
-                const uint32_t addr = static_cast<uint32_t>(top.dioptase__DOT__mem__DOT__waddr_buf);
-                const uint32_t raw = top.dioptase__DOT__cpu__DOT__store_data;
-                const uint8_t wen = static_cast<uint8_t>(top.dioptase__DOT__mem__DOT__wen_buf);
-                const uint16_t ps2_val = top.dioptase__DOT__ps2__DOT__keyboard_reg;
+                const uint32_t addr = static_cast<uint32_t>(top.rootp->dioptase__DOT__mem__DOT__waddr_buf);
+                const uint32_t raw = top.rootp->dioptase__DOT__mem_write_data;
+                const uint8_t wen = static_cast<uint8_t>(top.rootp->dioptase__DOT__mem__DOT__wen_buf);
+                const uint16_t ps2_val = top.rootp->dioptase__DOT__ps2__DOT__keyboard_reg;
                 std::cerr << "[uart] addr=0x" << std::hex << addr
                           << " wen=0x" << static_cast<int>(wen)
                           << " data=0x" << raw
@@ -777,7 +778,7 @@ public:
             uart_input_.enqueue_byte(value);
         }
         if (uart_debug_) {
-            prev_rx_count_ = static_cast<uint8_t>(top.dioptase__DOT__uart__DOT__rx_buf__DOT__count);
+            prev_rx_count_ = static_cast<uint8_t>(top.rootp->dioptase__DOT__uart__DOT__rx_buf__DOT__count);
         }
     }
 
@@ -792,28 +793,28 @@ public:
         uart_.after_posedge(top);
         sd_card_.tick(top);
         if (uart_debug_) {
-            const uint32_t reg_r5_cur = top.dioptase__DOT__cpu__DOT__decode__DOT__regfile__DOT__regfile[5];
-            const uint8_t rx_count = static_cast<uint8_t>(top.dioptase__DOT__uart__DOT__rx_buf__DOT__count);
+            const uint32_t reg_r5_cur = top.rootp->dioptase__DOT__cpu__DOT__decode__DOT__regfile__DOT__regfile[5];
+            const uint8_t rx_count = static_cast<uint8_t>(top.rootp->dioptase__DOT__uart__DOT__rx_buf__DOT__count);
             if (rx_count != prev_rx_count_) {
                 std::cerr << "[uart] rx fifo count " << static_cast<int>(prev_rx_count_)
                           << " -> " << static_cast<int>(rx_count) << std::endl;
                 if (prev_rx_count_ == 0 && rx_count > 0) {
-                    const uint8_t sample = static_cast<uint8_t>(top.dioptase__DOT__uart__DOT__uart_rx__DOT__shift);
+                    const uint8_t sample = static_cast<uint8_t>(top.rootp->dioptase__DOT__uart__DOT__uart_rx__DOT__shift);
                     std::cerr << "[uart] captured byte 0x" << std::hex << std::setw(2) << std::setfill('0')
                               << static_cast<int>(sample) << std::dec << std::setfill(' ') << std::endl;
                 }
                 if (prev_rx_count_ > 0 && rx_count == 0) {
                     const uint32_t raddr0 = 0;
-                    const uint32_t raddr1 = top.dioptase__DOT__mem__DOT__raddr1_buf;
-                    const uint32_t rdata0 = top.dioptase__DOT__mem_read0_data;
-                    const uint32_t rdata1 = top.dioptase__DOT__mem_read1_data;
-                    const uint32_t wdata1 = top.dioptase__DOT__cpu__DOT__reg_write_data_1;
-                    const uint32_t mem_stage_res = top.dioptase__DOT__cpu__DOT__mem_result_out_1;
-                    const uint8_t mem_is_load = top.dioptase__DOT__cpu__DOT__mem_is_load_out;
-                    const uint8_t exec_is_load = top.dioptase__DOT__cpu__DOT__exec_is_load_out;
-                    const uint32_t wb_res = top.dioptase__DOT__cpu__DOT__wb_result_out_1;
-                    const uint32_t masked_mem = top.dioptase__DOT__cpu__DOT__writeback__DOT__masked_mem_result;
-                    const uint8_t mem_opcode = static_cast<uint8_t>(top.dioptase__DOT__cpu__DOT__mem_opcode_out);
+                    const uint32_t raddr1 = top.rootp->dioptase__DOT__mem__DOT__raddr1_buf;
+                    const uint32_t rdata0 = top.rootp->dioptase__DOT__mem_read0_data;
+                    const uint32_t rdata1 = top.rootp->dioptase__DOT__mem_read1_data;
+                    const uint32_t wdata1 = top.rootp->dioptase__DOT__cpu__DOT__reg_write_data_1;
+                    const uint32_t mem_stage_res = top.rootp->dioptase__DOT__cpu__DOT__mem_result_out_1;
+                    const uint8_t mem_is_load = top.rootp->dioptase__DOT__cpu__DOT__mem_is_load_out;
+                    const uint8_t exec_is_load = top.rootp->dioptase__DOT__cpu__DOT__exec_is_load_out;
+                    const uint32_t wb_res = top.rootp->dioptase__DOT__cpu__DOT__wb_result_out_1;
+                    const uint32_t masked_mem = top.rootp->dioptase__DOT__cpu__DOT__writeback__DOT__mem_result_buf;
+                    const uint8_t mem_opcode = static_cast<uint8_t>(top.rootp->dioptase__DOT__cpu__DOT__mem_opcode_out);
                     std::cerr << "[uart] r5 now 0x" << std::hex << std::setw(8) << std::setfill('0')
                               << reg_r5_cur << " raddr0=0x" << std::setw(5) << raddr0
                               << " raddr1=0x" << std::setw(5) << raddr1
@@ -830,15 +831,15 @@ public:
                 }
                 prev_rx_count_ = rx_count;
             }
-            const uint8_t tx_count = static_cast<uint8_t>(top.dioptase__DOT__uart__DOT__tx_buf__DOT__count);
+            const uint8_t tx_count = static_cast<uint8_t>(top.rootp->dioptase__DOT__uart__DOT__tx_buf__DOT__count);
             if (tx_count != prev_tx_count_) {
                 std::cerr << "[uart] tx fifo count " << static_cast<int>(prev_tx_count_)
                           << " -> " << static_cast<int>(tx_count) << std::endl;
                 prev_tx_count_ = tx_count;
             }
-            if (top.dioptase__DOT__uart_tx_en) {
-                const uint8_t byte = static_cast<uint8_t>(top.dioptase__DOT__uart_tx_data);
-                const uint32_t addr = static_cast<uint32_t>(top.dioptase__DOT__mem__DOT__waddr_buf << 2);
+            if (top.rootp->dioptase__DOT__uart_tx_en) {
+                const uint8_t byte = static_cast<uint8_t>(top.rootp->dioptase__DOT__uart_tx_data);
+                const uint32_t addr = static_cast<uint32_t>(top.rootp->dioptase__DOT__mem__DOT__waddr_buf << 2);
                 std::cerr << "[uart] tx_en byte=0x" << std::hex << std::setw(2) << std::setfill('0')
                           << static_cast<int>(byte) << " addr=0x" << std::setw(8)
                           << addr << std::dec << std::setfill(' ') << std::endl;
@@ -850,7 +851,7 @@ public:
             }
         }
         if (ps2_debug_) {
-            const uint16_t value = static_cast<uint16_t>(top.dioptase__DOT__ps2__DOT__keyboard_reg);
+            const uint16_t value = static_cast<uint16_t>(top.rootp->dioptase__DOT__ps2__DOT__keyboard_reg);
             if (value != prev_ps2_value_) {
                 std::cerr << "[ps2] keyboard_reg -> 0x" << std::hex << std::setw(4) << std::setfill('0')
                           << value << std::dec << std::setfill(' ') << std::endl;
@@ -858,11 +859,11 @@ public:
             }
         }
         if (pit_debug_) {
-            const bool pit_irq = top.dioptase__DOT__mem__DOT__pit_interrupt;
+            const bool pit_irq = top.rootp->dioptase__DOT__mem__DOT__pit_interrupt;
             if (pit_irq && !pit_irq_prev_) {
-                const uint32_t color = top.dioptase__DOT__mem__DOT__ram[355];
-                const uint32_t tile0 = top.dioptase__DOT__mem__DOT__tile_map[32];
-                const uint32_t tile1 = top.dioptase__DOT__mem__DOT__tile_map[33];
+                const uint32_t color = top.rootp->dioptase__DOT__mem__DOT__ram[355];
+                const uint32_t tile0 = top.rootp->dioptase__DOT__mem__DOT__tile_map[32];
+                const uint32_t tile1 = top.rootp->dioptase__DOT__mem__DOT__tile_map[33];
                 std::cerr << "[pit] interrupt at cycle " << total_cycles_
                           << ", color=0x" << std::hex << std::setw(8)
                           << std::setfill('0') << color
@@ -979,7 +980,7 @@ private:
             return false;
         }
 
-        const uint8_t clk_div = top_.dioptase__DOT__vga__DOT__clk_div;
+        const uint8_t clk_div = top_.rootp->dioptase__DOT__vga__DOT__clk_div;
         if (clk_div_prev_ != 0 && clk_div == 0) {
             update_vga();
         }
