@@ -81,6 +81,22 @@ module execute(input clk, input clk_en, input halt,
     pc_out = 32'd0;
     op1_out = 32'd0;
     op2_out = 32'd0;
+    replay_dedup_active = 1'b0;
+    stall_prev = 1'b0;
+    last_opcode_sig = 5'd0;
+    last_s1_sig = 5'd0;
+    last_s2_sig = 5'd0;
+    last_tgt1_sig = 5'd0;
+    last_tgt2_sig = 5'd0;
+    last_alu_op_sig = 5'd0;
+    last_branch_code_sig = 5'd0;
+    last_imm_sig = 32'd0;
+    last_is_load_sig = 1'b0;
+    last_is_store_sig = 1'b0;
+    last_is_branch_sig = 1'b0;
+    last_is_post_inc_sig = 1'b0;
+    last_priv_type_sig = 5'd0;
+    last_crmov_mode_sig = 2'd0;
   end
 
   reg [4:0]reg_tgt_buf_a_1;
@@ -93,6 +109,22 @@ module execute(input clk, input clk_en, input halt,
   reg [31:0]reg_data_buf_b_2;
   reg tgts_cr_buf_a;
   reg tgts_cr_buf_b;
+  reg replay_dedup_active;
+  reg stall_prev;
+  reg [4:0]last_opcode_sig;
+  reg [4:0]last_s1_sig;
+  reg [4:0]last_s2_sig;
+  reg [4:0]last_tgt1_sig;
+  reg [4:0]last_tgt2_sig;
+  reg [4:0]last_alu_op_sig;
+  reg [4:0]last_branch_code_sig;
+  reg [31:0]last_imm_sig;
+  reg last_is_load_sig;
+  reg last_is_store_sig;
+  reg last_is_branch_sig;
+  reg last_is_post_inc_sig;
+  reg [4:0]last_priv_type_sig;
+  reg [1:0]last_crmov_mode_sig;
 
   wire is_mem_w = (5'd3 <= opcode && opcode <= 5'd5);
   wire is_mem_d = (5'd6 <= opcode && opcode <= 5'd8);
@@ -169,14 +201,36 @@ module execute(input clk, input clk_en, input halt,
      mem_b_load &&
      !bubble_in && !mem_b_bubble));
 
+  // Frontend replay can present the same decoded instruction multiple times
+  // after a load stall. Track the first post-stall instruction signature and
+  // bubble repeated copies until decode advances to a different signature.
+  wire opening_after_stall = stall_prev && !stall && !bubble_in && !exc_in_wb && !rfe_in_wb;
+  wire same_replay_sig =
+    (opcode == last_opcode_sig) &&
+    (s_1 == last_s1_sig) &&
+    (s_2 == last_s2_sig) &&
+    (tgt_1 == last_tgt1_sig) &&
+    (tgt_2 == last_tgt2_sig) &&
+    (alu_op == last_alu_op_sig) &&
+    (branch_code == last_branch_code_sig) &&
+    (imm == last_imm_sig) &&
+    (is_load == last_is_load_sig) &&
+    (is_store == last_is_store_sig) &&
+    (is_branch == last_is_branch_sig) &&
+    (is_post_inc == last_is_post_inc_sig) &&
+    (priv_type == last_priv_type_sig) &&
+    (crmov_mode_type == last_crmov_mode_sig);
+  wire exec_dup = replay_dedup_active && !opening_after_stall &&
+    !bubble_in && !stall && !exc_in_wb && !rfe_in_wb && same_replay_sig;
+
   // nonsense to make subtract immediate work how i want
   wire [31:0]lhs = (opcode == 5'd1 && alu_op == 5'd16) ? imm : op1;
   wire [31:0]rhs = ((opcode == 5'd1 && alu_op != 5'd16) || (opcode == 5'd2) || 
                   (5'd3 <= opcode && opcode <= 5'd11) || (opcode == 5'd22)) ? 
                     imm : (opcode == 5'd1 && alu_op == 5'd16) ? op1 : op2;
 
-  wire we_bit = is_store && !bubble_in && !exc_in_wb 
-                && !rfe_in_wb && (exc_out == 8'd0) && !stall;
+  wire we_bit = is_store && !bubble_in && !exc_in_wb
+                && !rfe_in_wb && (exc_out == 8'd0) && !stall && !exec_dup;
 
   wire [31:0]alu_rslt;
   ALU ALU(clk, clk_en, opcode, alu_op, lhs, rhs, decode_pc_out, bubble_in, 
@@ -268,32 +322,32 @@ always @(posedge clk) begin
                   alu_rslt;
 
       result_2 <= bubble_in ? 32'd0 : alu_rslt;
-      tgt_out_1 <= (bubble_in || exc_in_wb || rfe_in_wb || stall) ? 5'd0 : tgt_1;
-      tgt_out_2 <= (bubble_in || exc_in_wb || rfe_in_wb || stall) ? 5'd0 : tgt_2;
+      tgt_out_1 <= (bubble_in || exc_in_wb || rfe_in_wb || stall || exec_dup) ? 5'd0 : tgt_1;
+      tgt_out_2 <= (bubble_in || exc_in_wb || rfe_in_wb || stall || exec_dup) ? 5'd0 : tgt_2;
       opcode_out <= bubble_in ? 5'd0 : opcode;
-      bubble_out <= (exc_in_wb || rfe_in_wb || stall || halt) ? 1 : bubble_in;
+      bubble_out <= (exc_in_wb || rfe_in_wb || stall || halt || exec_dup) ? 1 : bubble_in;
 
       addr <= mem_addr;
-      mem_re <= is_load && !bubble_in && !exc_in_wb 
-                && !rfe_in_wb && (exc_out == 8'd0) && !stall;
+      mem_re <= is_load && !bubble_in && !exc_in_wb
+                && !rfe_in_wb && (exc_out == 8'd0) && !stall && !exec_dup;
       store_data <= bubble_in ? 32'd0 : store_data_next;
       we <= bubble_in ? 4'd0 : we_next;
 
-      is_load_out <= bubble_in ? 1'b0 : is_load;
-      is_store_out <= bubble_in ? 1'b0 : is_store;
-      tgts_cr_out <= bubble_in ? 1'b0 : tgts_cr;
-      priv_type_out <= bubble_in ? 5'd0 : priv_type;
-      crmov_mode_type_out <= bubble_in ? 2'd0 : crmov_mode_type;
+      is_load_out <= (bubble_in || exec_dup) ? 1'b0 : is_load;
+      is_store_out <= (bubble_in || exec_dup) ? 1'b0 : is_store;
+      tgts_cr_out <= (bubble_in || exec_dup) ? 1'b0 : tgts_cr;
+      priv_type_out <= (bubble_in || exec_dup) ? 5'd0 : priv_type;
+      crmov_mode_type_out <= (bubble_in || exec_dup) ? 2'd0 : crmov_mode_type;
 
       exc_out <= bubble_in ? 8'h0 : exc_in;
 
       pc_out <= decode_pc_out;
-      op1_out <= bubble_in ? 32'd0 : op1;
-      op2_out <= bubble_in ? 32'd0 : op2;
+      op1_out <= (bubble_in || exec_dup) ? 32'd0 : op1;
+      op2_out <= (bubble_in || exec_dup) ? 32'd0 : op2;
 
-      flags_out <= bubble_in ? 4'd0 : flags;
+      flags_out <= (bubble_in || exec_dup) ? 4'd0 : flags;
 
-      is_tlbr_out <= !bubble_in &&
+      is_tlbr_out <= !bubble_in && !exec_dup &&
         (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd0);
 
       if (stall) begin
@@ -308,6 +362,32 @@ always @(posedge clk) begin
         reg_data_buf_b_2 <= reg_data_buf_a_2;
         tgts_cr_buf_b <= tgts_cr_buf_a;
       end
+      if (exc_in_wb || rfe_in_wb || halt) begin
+        replay_dedup_active <= 1'b0;
+      end else if (opening_after_stall) begin
+        replay_dedup_active <= 1'b1;
+      end else if (replay_dedup_active && !stall && !bubble_in && !same_replay_sig) begin
+        replay_dedup_active <= 1'b0;
+      end
+
+      if (!stall && !bubble_in && !exc_in_wb && !rfe_in_wb) begin
+        last_opcode_sig <= opcode;
+        last_s1_sig <= s_1;
+        last_s2_sig <= s_2;
+        last_tgt1_sig <= tgt_1;
+        last_tgt2_sig <= tgt_2;
+        last_alu_op_sig <= alu_op;
+        last_branch_code_sig <= branch_code;
+        last_imm_sig <= imm;
+        last_is_load_sig <= is_load;
+        last_is_store_sig <= is_store;
+        last_is_branch_sig <= is_branch;
+        last_is_post_inc_sig <= is_post_inc;
+        last_priv_type_sig <= priv_type;
+        last_crmov_mode_sig <= crmov_mode_type;
+      end
+
+      stall_prev <= stall;
     end
   end
 end

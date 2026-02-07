@@ -49,6 +49,27 @@ module decode(input clk, input clk_en,
   assign pc_decode_in = use_buf ? pc_buf : pc_in;
   assign bubble_decode_in = use_buf ? bubble_buf : bubble_in;
   assign exc_decode_in = use_buf ? exc_buf : exc_in;
+  // One-cycle PC/instruction catch-up on stall replay. Guard with was_was_stall
+  // so this only applies on the first live cycle after replay.
+  wire replay_pc_fix = was_was_stall && !use_buf && !stall &&
+    (pc_in == pc_buf) && (mem_out_0 != instr_buf) && !bubble_in;
+  reg replay_pc_fix_d1;
+  reg replay_pc_fix_d2;
+  reg prev_live_valid;
+  reg [31:0]prev_live_instr;
+  reg [31:0]prev_live_pc;
+  // After the catch-up cycle, instruction memory can still present one extra
+  // duplicate word while PC has already advanced. Drop that duplicate as bubble.
+  wire replay_dup_drop = replay_pc_fix_d2 && !stall && !use_buf && !bubble_in &&
+    (mem_out_0 == prev_live_instr) && (pc_in == prev_live_pc + 32'd4);
+  // On some replay windows, the first live cycle mirrors the replayed
+  // instruction at the same PC. Drop it so the instruction executes once.
+  wire replay_same_pc_dup = !stall && !use_buf && was_was_stall && !bubble_in &&
+    (pc_in == pc_buf) && (mem_out_0 == instr_buf);
+  // Generic frontend replay duplicate filter: if the same live {pc,instr}
+  // appears on consecutive cycles, execute it once then bubble repeats.
+  wire live_consecutive_dup = !stall && !use_buf && !bubble_in &&
+    prev_live_valid && (pc_in == prev_live_pc) && (mem_out_0 == prev_live_instr);
 
   wire [4:0]opcode = instr_in[31:27];
 
@@ -182,6 +203,11 @@ module decode(input clk, input clk_en,
     pc_buf = 32'd0;
     bubble_buf = 1'b1;
     exc_buf = 8'd0;
+    replay_pc_fix_d1 = 1'b0;
+    replay_pc_fix_d2 = 1'b0;
+    prev_live_valid = 1'b0;
+    prev_live_instr = 32'd0;
+    prev_live_pc = 32'd0;
   end
 
   wire priv_instr_tgts_ra = 
@@ -210,40 +236,45 @@ module decode(input clk, input clk_en,
             8'h0
             ) : 8'h0;
 
+  wire decode_kill = flush || bubble_decode_in || replay_dup_drop ||
+    replay_same_pc_dup || live_consecutive_dup;
+
   always @(posedge clk) begin
     if (clk_en) begin
       if (~halt) begin
         if (~stall) begin 
-          opcode_out <= (flush || bubble_decode_in) ? 5'd0 : opcode;
-          s_1_out <= (flush || bubble_decode_in) ? 5'd0 : s_1;
-          s_2_out <= (flush || bubble_decode_in) ? 5'd0 : s_2;
-          cr_s_out <= (flush || bubble_decode_in) ? 5'd0 : r_b;
+          opcode_out <= decode_kill ? 5'd0 : opcode;
+          s_1_out <= decode_kill ? 5'd0 : s_1;
+          s_2_out <= decode_kill ? 5'd0 : s_2;
+          cr_s_out <= decode_kill ? 5'd0 : r_b;
 
-          tgt_out_1 <= (flush || bubble_decode_in || is_store || alias_postinc_load) ? 5'b0 : r_a;
-          tgt_out_2 <= (flush || bubble_decode_in || !is_absolute_mem || increment_type == 2'd0) ? 5'b0 : r_b;
+          tgt_out_1 <= (decode_kill || is_store || alias_postinc_load) ? 5'b0 : r_a;
+          tgt_out_2 <= (decode_kill || !is_absolute_mem || increment_type == 2'd0) ? 5'b0 : r_b;
 
-          imm_out <= (flush || bubble_decode_in) ? 32'd0 : imm;
-          branch_code_out <= (flush || bubble_decode_in) ? 5'd0 : branch_code;
-          alu_op_out <= (flush || bubble_decode_in) ? 5'd0 : alu_op;
-          bubble_out <= flush ? 1 : bubble_decode_in;
-          pc_out <= pc_decode_in;
+          imm_out <= decode_kill ? 32'd0 : imm;
+          branch_code_out <= decode_kill ? 5'd0 : branch_code;
+          alu_op_out <= decode_kill ? 5'd0 : alu_op;
+          bubble_out <= (flush || replay_dup_drop || replay_same_pc_dup ||
+            live_consecutive_dup) ? 1 : bubble_decode_in;
+          pc_out <= replay_pc_fix ? (pc_in + 32'd4) : pc_decode_in;
       
-          is_load_out <= (flush || bubble_decode_in) ? 1'b0 : is_load;
-          is_store_out <= (flush || bubble_decode_in) ? 1'b0 : is_store;
-          is_branch_out <= (flush || bubble_decode_in) ? 1'b0 : is_branch;
-          is_post_inc_out <= is_absolute_mem && increment_type == 2;
-          crmov_mode_type_out <= (flush || bubble_decode_in) ? 2'd0 : crmov_mode_type;
-          priv_type_out <= (flush || bubble_decode_in) ? 5'd0 : priv_type;
-          tgts_cr_out <= (flush || bubble_decode_in) ? 1'b0 : tgts_cr;
+          is_load_out <= decode_kill ? 1'b0 : is_load;
+          is_store_out <= decode_kill ? 1'b0 : is_store;
+          is_branch_out <= decode_kill ? 1'b0 : is_branch;
+          is_post_inc_out <= decode_kill ? 1'b0 : (is_absolute_mem && increment_type == 2);
+          crmov_mode_type_out <= decode_kill ? 2'd0 : crmov_mode_type;
+          priv_type_out <= decode_kill ? 5'd0 : priv_type;
+          tgts_cr_out <= decode_kill ? 1'b0 : tgts_cr;
 
-          tlb_we <= (!flush && !bubble_decode_in) &&
+          tlb_we <= (!decode_kill) &&
             (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd1);
-          tlbc   <= (!flush && !bubble_decode_in) &&
+          tlbc   <= (!decode_kill) &&
             (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd2);
         end
 
         if (~stall) begin
-          exc_out <= (interrupt_exc != 8'h0) ? interrupt_exc
+          exc_out <= (replay_dup_drop || replay_same_pc_dup || live_consecutive_dup) ? 8'h0 :
+                    (interrupt_exc != 8'h0) ? interrupt_exc
                     : (exc_decode_in != 0) ? exc_decode_in : exc_priv_instr;
         end
 
@@ -252,10 +283,24 @@ module decode(input clk, input clk_en,
         // so the stalled instruction is available for replay.
         if (!was_stall) begin
           instr_buf <= mem_out_0;
-          pc_buf <= pc_in;
+          // On the first cycle stall asserts, instruction memory can already
+          // point at the next word while fetch PC is still one word behind.
+          // In that case, buffer PC+4 so replay keeps the pair aligned.
+          pc_buf <= (stall && prev_live_valid &&
+            (pc_in == prev_live_pc) && (mem_out_0 != prev_live_instr)) ?
+            (pc_in + 32'd4) : pc_in;
           bubble_buf <= bubble_in;
           exc_buf <= exc_in;
         end
+        if (stall || use_buf || flush || bubble_in) begin
+          prev_live_valid <= 1'b0;
+        end else begin
+          prev_live_valid <= 1'b1;
+          prev_live_instr <= mem_out_0;
+          prev_live_pc <= pc_in;
+        end
+        replay_pc_fix_d1 <= replay_pc_fix;
+        replay_pc_fix_d2 <= replay_pc_fix_d1;
         was_stall <= stall;
         was_was_stall <= was_stall;
 
