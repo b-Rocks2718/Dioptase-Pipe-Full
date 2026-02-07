@@ -58,26 +58,26 @@ always @(posedge clk) begin
         is_load_out <= 1'b0;
         is_store_out <= 1'b0;
       end else begin
-      tgt_out_1 <= tgt_in_1;
-      tgt_out_2 <= tgt_in_2;
-      opcode_out <= opcode_in;
-      result_out_1 <= result_in_1;
-      result_out_2 <= result_in_2;
-      bubble_out <= (exc_in_wb || rfe_in_wb || halt) ? 1 : bubble_in;
-      addr_out <= addr_in;
-
-      mem_pc_out <= exec_pc_out;
-      exc_out <= bubble_in ? 8'h0 : exc_in;
-      tgts_cr_out <= tgts_cr && !bubble_in;
-      priv_type_out <= priv_type;
-      crmov_mode_type_out <= crmov_mode_type;
-      flags_out <= flags_in;
-
-      op1_out <= op1;
-      op2_out <= op2;
-
-      is_load_out <= is_load;
-      is_store_out <= is_store;
+        tgt_out_1 <= tgt_in_1;
+        tgt_out_2 <= tgt_in_2;
+        opcode_out <= opcode_in;
+        result_out_1 <= result_in_1;
+        result_out_2 <= result_in_2;
+        bubble_out <= (exc_in_wb || rfe_in_wb || halt) ? 1 : bubble_in;
+        addr_out <= addr_in;
+  
+        mem_pc_out <= exec_pc_out;
+        exc_out <= bubble_in ? 8'h0 : exc_in;
+        tgts_cr_out <= tgts_cr && !bubble_in;
+        priv_type_out <= priv_type;
+        crmov_mode_type_out <= crmov_mode_type;
+        flags_out <= flags_in;
+  
+        op1_out <= op1;
+        op2_out <= op2;
+  
+        is_load_out <= is_load;
+        is_store_out <= is_store;
       end
     end
   end

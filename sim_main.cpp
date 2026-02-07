@@ -422,7 +422,7 @@ public:
             std::cout << ch << std::flush;
             if (debug_) {
                 const uint32_t addr = static_cast<uint32_t>(top.rootp->dioptase__DOT__mem__DOT__waddr_buf);
-                const uint32_t raw = top.rootp->dioptase__DOT__mem_write_data;
+                const uint32_t raw = 0; // broken and idk verilator names top.rootp->dioptase__DOT__store_data;
                 const uint8_t wen = static_cast<uint8_t>(top.rootp->dioptase__DOT__mem__DOT__wen_buf);
                 const uint16_t ps2_val = top.rootp->dioptase__DOT__ps2__DOT__keyboard_reg;
                 std::cerr << "[uart] addr=0x" << std::hex << addr
@@ -809,11 +809,11 @@ public:
                     const uint32_t rdata0 = top.rootp->dioptase__DOT__mem_read0_data;
                     const uint32_t rdata1 = top.rootp->dioptase__DOT__mem_read1_data;
                     const uint32_t wdata1 = top.rootp->dioptase__DOT__cpu__DOT__reg_write_data_1;
-                    const uint32_t mem_stage_res = top.rootp->dioptase__DOT__cpu__DOT__mem_result_out_1;
-                    const uint8_t mem_is_load = top.rootp->dioptase__DOT__cpu__DOT__mem_is_load_out;
+                    const uint32_t mem_stage_res = top.rootp->dioptase__DOT__cpu__DOT__mem_b_result_out_1;
+                    const uint8_t mem_is_load = top.rootp->dioptase__DOT__cpu__DOT__mem_b_is_load_out;
                     const uint8_t exec_is_load = top.rootp->dioptase__DOT__cpu__DOT__exec_is_load_out;
                     const uint32_t wb_res = top.rootp->dioptase__DOT__cpu__DOT__wb_result_out_1;
-                    const uint8_t mem_opcode = static_cast<uint8_t>(top.rootp->dioptase__DOT__cpu__DOT__mem_opcode_out);
+                    const uint8_t mem_opcode = static_cast<uint8_t>(top.rootp->dioptase__DOT__cpu__DOT__mem_b_opcode_out);
                     std::cerr << "[uart] r5 now 0x" << std::hex << std::setw(8) << std::setfill('0')
                               << reg_r5_cur << " raddr0=0x" << std::setw(5) << raddr0
                               << " raddr1=0x" << std::setw(5) << raddr1

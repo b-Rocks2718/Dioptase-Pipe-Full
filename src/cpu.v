@@ -19,8 +19,10 @@ module pipelined_cpu(
     end
 
     wire [11:0]pid;
-    wire [3:0]mem_flags_out;
-    wire [31:0]mem_addr_out;
+    wire [3:0]mem_a_flags_out;
+    wire [3:0]mem_b_flags_out;
+    wire [31:0]mem_a_addr_out;
+    wire [31:0]mem_b_addr_out;
 
     reg halt = 0;
     reg sleep = 0;
@@ -78,7 +80,8 @@ module pipelined_cpu(
 
     wire [7:0]exc_tlb_0;
     wire [7:0]exc_tlb_1;
-    wire [31:0]mem_pc_out;
+    wire [31:0]mem_a_pc_out;
+    wire [31:0]mem_b_pc_out;
 
     wire [31:0]decode_op1_out;
     wire [31:0]decode_op2_out;
@@ -101,12 +104,15 @@ module pipelined_cpu(
       tlb_out_0, tlb_out_1, tlb_read
     );
 
-    wire [31:0]mem_op1_out;
-    wire [31:0]mem_op2_out;
+    wire [31:0]mem_a_op1_out;
+    wire [31:0]mem_a_op2_out;
+    wire [31:0]mem_b_op1_out;
+    wire [31:0]mem_b_op2_out;
 
     fetch_a fetch_a(clk, clk_en, stall | halt_or_sleep, flush, branch, branch_tgt, 
-      exc_in_wb, mem_out_1, rfe_in_wb, mem_op1_out, 
-      fetch_addr, fetch_a_pc_out, fetch_a_bubble_out, fetch_a_exc_out);
+      exc_in_wb, mem_out_1, rfe_in_wb, mem_b_op1_out, 
+      fetch_addr, fetch_a_pc_out, fetch_a_bubble_out, fetch_a_exc_out
+    );
 
     wire fetch_b_bubble_out;
     wire [31:0]fetch_b_pc_out;
@@ -114,7 +120,8 @@ module pipelined_cpu(
 
     fetch_b fetch_b(clk, clk_en, stall | halt_or_sleep, flush, fetch_a_bubble_out, fetch_a_pc_out,
       fetch_a_exc_out, exc_tlb_0,
-      fetch_b_bubble_out, fetch_b_pc_out, fetch_b_exc_out);
+      fetch_b_bubble_out, fetch_b_pc_out, fetch_b_exc_out
+    );
 
     wire [4:0] decode_opcode_out;
     wire [4:0] decode_s_1_out;
@@ -125,8 +132,10 @@ module pipelined_cpu(
     wire [31:0] decode_imm_out;
     wire [4:0] decode_branch_code_out;
     
-    wire [4:0]mem_tgt_out_1;
-    wire [4:0]mem_tgt_out_2;
+    wire [4:0]mem_a_tgt_out_1;
+    wire [4:0]mem_a_tgt_out_2;
+    wire [4:0]mem_b_tgt_out_1;
+    wire [4:0]mem_b_tgt_out_2;
 
     wire decode_is_load_out;
     wire decode_is_store_out;
@@ -140,19 +149,20 @@ module pipelined_cpu(
     wire [4:0]decode_priv_type_out; 
     wire [1:0]decode_crmov_mode_type_out;
 
-    wire mem_tgts_cr_out;
+    wire mem_a_tgts_cr_out;
+    wire mem_b_tgts_cr_out;
 
-    wire [31:0]epc_source = sleep_interrupt_pending ? sleep_pc : mem_pc_out;
+    wire [31:0]epc_source = sleep_interrupt_pending ? sleep_pc : mem_b_pc_out;
 
     decode decode(clk, clk_en, flush, halt_or_sleep,
       mem_out_0, fetch_b_bubble_out, fetch_b_pc_out,
-      reg_we_1, mem_tgt_out_1, reg_write_data_1,
-      reg_we_2, mem_tgt_out_2, reg_write_data_2,
-      mem_tgts_cr_out,
+      reg_we_1, mem_b_tgt_out_1, reg_write_data_1,
+      reg_we_2, mem_b_tgt_out_2, reg_write_data_2,
+      mem_b_tgts_cr_out,
       stall,
       fetch_b_exc_out,
 
-      epc_source, {28'b0, mem_flags_out}, {12'b0, mem_addr_out[31:12]},
+      epc_source, {28'b0, mem_b_flags_out}, {12'b0, mem_b_addr_out[31:12]},
       exc_in_wb, tlb_exc_in_wb, interrupts,
       interrupt_in_wb, rfe_in_wb, rfi_in_wb,
       clock_divider, pid, kmode, decode_exc_out,
@@ -164,11 +174,14 @@ module pipelined_cpu(
       decode_is_load_out, decode_is_store_out, decode_is_branch_out,
       decode_is_post_inc_out, decode_tgts_cr_out, 
       decode_priv_type_out, decode_crmov_mode_type_out,
-      decode_tlb_we_out, decode_tlbc_out, interrupt_state);
+      decode_tlb_we_out, decode_tlbc_out, interrupt_state
+    );
 
     wire exec_bubble_out;
-    wire [31:0]mem_result_out_1;
-    wire [31:0]mem_result_out_2;
+    wire [31:0]mem_a_result_out_1;
+    wire [31:0]mem_a_result_out_2;
+    wire [31:0]mem_b_result_out_1;
+    wire [31:0]mem_b_result_out_2;
     wire [4:0]exec_opcode_out;
     wire [4:0]exec_tgt_out_1;
     wire [4:0]exec_tgt_out_2;
@@ -176,8 +189,8 @@ module pipelined_cpu(
     wire [4:0]wb_tgt_out_2;
     wire [31:0]wb_result_out_1;
     wire [31:0]wb_result_out_2;
-    wire [4:0]mem_opcode_out;
-    wire [31:0]exec_addr_out;
+    wire [4:0]mem_a_opcode_out;
+    wire [4:0]mem_b_opcode_out;
 
     wire exec_is_load_out;
     wire exec_is_store_out;
@@ -200,67 +213,96 @@ module pipelined_cpu(
       decode_opcode_out, decode_s_1_out, decode_s_2_out, decode_cr_s_out,
       decode_tgt_out_1, decode_tgt_out_2,
       decode_alu_op_out, decode_imm_out, decode_branch_code_out,
-      mem_tgt_out_1, mem_tgt_out_2, wb_tgt_out_1, wb_tgt_out_2,
+      mem_a_tgt_out_1, mem_a_tgt_out_2, 
+      mem_b_tgt_out_1, mem_b_tgt_out_2,
+      wb_tgt_out_1, wb_tgt_out_2,
       decode_op1_out, decode_op2_out, decode_cr_op_out,
-      mem_result_out_1, mem_result_out_2, wb_result_out_1, wb_result_out_2, 
-      mem_tgts_cr_out, wb_tgts_cr_out,
-      decode_pc_out, mem_opcode_out,
-      decode_is_load_out, decode_is_store_out, decode_is_branch_out, mem_bubble_out, mem_is_load_out,
+      mem_a_result_out_1, mem_a_result_out_2, 
+      mem_b_result_out_1, mem_b_result_out_2,
+      wb_result_out_1, wb_result_out_2, 
+      mem_a_tgts_cr_out, mem_b_tgts_cr_out, wb_tgts_cr_out,
+      decode_pc_out, mem_a_opcode_out, mem_b_opcode_out,
+      decode_is_load_out, decode_is_store_out, decode_is_branch_out, 
+      mem_a_bubble_out, mem_a_is_load_out, mem_b_bubble_out, mem_b_is_load_out,
       decode_is_post_inc_out, decode_tgts_cr_out, decode_priv_type_out,
-      decode_crmov_mode_type_out, decode_exc_out, exc_in_wb, mem_op2_out, rfe_in_wb,
+      decode_crmov_mode_type_out, decode_exc_out, exc_in_wb, mem_b_op2_out, rfe_in_wb,
       tlb_read, exc_tlb_1,
 
       exec_result_out_1, exec_result_out_2,
-      addr, mem_re, store_data, mem_we, exec_addr_out,
+      addr, mem_re, store_data, mem_we,
       exec_opcode_out, exec_tgt_out_1, exec_tgt_out_2, exec_bubble_out, 
       branch, branch_tgt, flags, exec_flags_out, stall,
       exec_is_load_out, exec_is_store_out,
       exec_tgts_cr_out, exec_priv_type_out, exec_crmov_mode_type_out,
       exec_exc_out, exec_pc_out,
       exec_op1, exec_op2,
-      exec_op1_out, exec_op2_out);
+      exec_op1_out, exec_op2_out
+    );
 
     assign exec_is_sleep_out = (exec_opcode_out == 5'd31) &&
       (exec_priv_type_out == 5'd2) &&
       (exec_crmov_mode_type_out == 2'd1) &&
       !exec_bubble_out;
 
-    wire mem_bubble_out;
-    wire mem_is_load_out;
-    wire mem_is_store_out;
+    wire mem_a_bubble_out;
+    wire mem_b_bubble_out;
+    wire mem_a_is_load_out;
+    wire mem_b_is_load_out;
+    wire mem_a_is_store_out;
+    wire mem_b_is_store_out;
 
-    wire [7:0]mem_exc_out;
-    wire [4:0]mem_priv_type_out;
-    wire [1:0]mem_crmov_mode_type_out;
+    wire [7:0]mem_a_exc_out;
+    wire [7:0]mem_b_exc_out;
+    wire [4:0]mem_a_priv_type_out;
+    wire [4:0]mem_b_priv_type_out;
+    wire [1:0]mem_a_crmov_mode_type_out;
+    wire [1:0]mem_b_crmov_mode_type_out;
 
-    memory memory(clk, clk_en, halt_or_sleep,
+    memory memory_a(clk, clk_en, halt_or_sleep,
       exec_bubble_out, exec_opcode_out, exec_tgt_out_1, exec_tgt_out_2,
-      exec_result_out_1, exec_result_out_2, exec_addr_out,
+      exec_result_out_1, exec_result_out_2, addr,
       exec_is_load_out, exec_is_store_out,
       exec_pc_out, exec_exc_out, exec_tgts_cr_out, exec_priv_type_out, 
       exec_crmov_mode_type_out, exec_flags_out, exec_op1_out, exec_op2_out,
       exc_in_wb, rfe_in_wb,
 
-      mem_tgt_out_1, mem_tgt_out_2, 
-      mem_result_out_1, mem_result_out_2,
-      mem_opcode_out, mem_addr_out, mem_bubble_out,
-      mem_is_load_out, mem_is_store_out,
-      mem_pc_out, mem_exc_out, mem_tgts_cr_out, mem_priv_type_out,
-      mem_crmov_mode_type_out, mem_flags_out, mem_op1_out, mem_op2_out
-      );
+      mem_a_tgt_out_1, mem_a_tgt_out_2, 
+      mem_a_result_out_1, mem_a_result_out_2,
+      mem_a_opcode_out, mem_a_addr_out, mem_a_bubble_out,
+      mem_a_is_load_out, mem_a_is_store_out,
+      mem_a_pc_out, mem_a_exc_out, mem_a_tgts_cr_out, mem_a_priv_type_out,
+      mem_a_crmov_mode_type_out, mem_a_flags_out, mem_a_op1_out, mem_a_op2_out
+    );
 
-    writeback writeback(clk, clk_en, halt_or_sleep, mem_bubble_out, mem_tgt_out_1, mem_tgt_out_2,
-      mem_is_load_out, mem_is_store_out,
-      mem_opcode_out,
-      mem_result_out_1, mem_result_out_2, mem_out_1, mem_addr_out,
-      mem_exc_out, mem_tgts_cr_out, mem_priv_type_out, mem_crmov_mode_type_out,
+    memory memory_b(clk, clk_en, halt_or_sleep,
+      mem_a_bubble_out, mem_a_opcode_out, mem_a_tgt_out_1, mem_a_tgt_out_2,
+      mem_a_result_out_1, mem_a_result_out_2, mem_a_addr_out,
+      mem_a_is_load_out, mem_a_is_store_out,
+      mem_a_pc_out, mem_a_exc_out, mem_a_tgts_cr_out, mem_a_priv_type_out, 
+      mem_a_crmov_mode_type_out, mem_a_flags_out, mem_a_op1_out, mem_a_op2_out,
+      exc_in_wb, rfe_in_wb,
+
+      mem_b_tgt_out_1, mem_b_tgt_out_2, 
+      mem_b_result_out_1, mem_b_result_out_2,
+      mem_b_opcode_out, mem_b_addr_out, mem_b_bubble_out,
+      mem_b_is_load_out, mem_b_is_store_out,
+      mem_b_pc_out, mem_b_exc_out, mem_b_tgts_cr_out, mem_b_priv_type_out,
+      mem_b_crmov_mode_type_out, mem_b_flags_out, mem_b_op1_out, mem_b_op2_out
+    );
+
+    writeback writeback(clk, clk_en, halt_or_sleep, mem_b_bubble_out, mem_b_tgt_out_1, mem_b_tgt_out_2,
+      mem_b_is_load_out, mem_b_is_store_out,
+      mem_b_opcode_out,
+      mem_b_result_out_1, mem_b_result_out_2, mem_out_1, mem_b_addr_out,
+      mem_b_exc_out, mem_b_tgts_cr_out, mem_b_priv_type_out, mem_b_crmov_mode_type_out,
       
       reg_write_data_1, reg_write_data_2,
       reg_we_1, wb_tgt_out_1, wb_result_out_1,
       reg_we_2, wb_tgt_out_2, wb_result_out_2,
       exc_in_wb, interrupt_in_wb, rfe_in_wb, rfi_in_wb,
       tlb_exc_in_wb,
-      wb_halt, wb_sleep);
+      wb_halt, wb_sleep
+    );
 
     always @(posedge clk) begin
       if (clk_en) begin

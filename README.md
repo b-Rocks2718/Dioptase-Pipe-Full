@@ -2,16 +2,19 @@
 
 Pipeline implementation of [Dioptase-Emulator-Full](https://github.com/b-Rocks2718/Dioptase-Emulator-Full)
 
-6 stage pipeline
+9 stage pipeline
 
+- TLB fetch // not yet added
 - fetch a
 - fetch b
 - decode
 - execute
-- mem
+- TLB memory // not yet added
+- memory a
+- memory b
 - writeback
 
-The I/O verilog for this project build off the code written by [Paul Bailey](https://github.com/PaulBailey-1) for the [JPEB project](https://github.com/PaulBailey-1/JPEB)
+The I/O verilog for this project builds off the code written by [Paul Bailey](https://github.com/PaulBailey-1) for the [JPEB project](https://github.com/PaulBailey-1/JPEB)
 
 ## Dependencies
 
