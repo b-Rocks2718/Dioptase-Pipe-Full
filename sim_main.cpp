@@ -1,11 +1,13 @@
 #include <array>
 #include <cctype>
 #include <cerrno>
+#include <cstring>
 #include <cstdint>
 #include <cstdlib>
 #include <deque>
 #include <iomanip>
 #include <iostream>
+#include <fstream>
 #include <cstdio>
 #include <optional>
 #include <stdexcept>
@@ -69,6 +71,77 @@ struct Options {
     uint64_t max_cycles = 500;
     bool keyboard_via_uart = false;
 };
+
+std::string trim_whitespace(const std::string &s) {
+    std::size_t start = 0;
+    while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start])) != 0) {
+        ++start;
+    }
+    std::size_t end = s.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1])) != 0) {
+        --end;
+    }
+    return s.substr(start, end - start);
+}
+
+// Build artifacts may include '#label ...' metadata at the end of .hex files.
+// Verilog $readmemh rejects '#', so sanitize those files for simulation use.
+void sanitize_hex_plusarg(std::vector<std::string> &verilator_args) {
+    for (std::string &arg : verilator_args) {
+        static const std::string hex_prefix = "+hex=";
+        if (arg.rfind(hex_prefix, 0) != 0) {
+            continue;
+        }
+
+        const std::string input_path = arg.substr(hex_prefix.size());
+        std::ifstream in(input_path);
+        if (!in.is_open()) {
+            continue;
+        }
+
+        std::vector<std::string> cleaned_lines;
+        cleaned_lines.reserve(8192);
+        bool needs_sanitize = false;
+        std::string line;
+        while (std::getline(in, line)) {
+            const std::size_t hash_pos = line.find('#');
+            if (hash_pos != std::string::npos) {
+                line = line.substr(0, hash_pos);
+                needs_sanitize = true;
+            }
+            line = trim_whitespace(line);
+            if (!line.empty()) {
+                cleaned_lines.push_back(line);
+            }
+        }
+
+        if (!needs_sanitize) {
+            continue;
+        }
+
+        char tmp_template[] = "/tmp/dioptase_hex_XXXXXX";
+        const int fd = ::mkstemp(tmp_template);
+        if (fd < 0) {
+            std::cerr << "Failed to create sanitized hex temp file for " << input_path
+                      << ": " << std::strerror(errno) << std::endl;
+            std::exit(EXIT_FAILURE);
+        }
+        ::close(fd);
+
+        std::ofstream out(tmp_template, std::ios::out | std::ios::trunc);
+        if (!out.is_open()) {
+            std::cerr << "Failed to open sanitized hex temp file for " << input_path
+                      << ": " << tmp_template << std::endl;
+            std::exit(EXIT_FAILURE);
+        }
+        for (const std::string &clean : cleaned_lines) {
+            out << clean << '\n';
+        }
+        out.close();
+
+        arg = hex_prefix + std::string(tmp_template);
+    }
+}
 
 class TerminalRawGuard {
 public:
@@ -1090,6 +1163,7 @@ void run_with_vga(Vdioptase &top, uint64_t max_cycles, bool keyboard_via_uart) {
 int main(int argc, char **argv) {
     std::vector<std::string> verilator_args;
     Options opts = parse_options(argc, argv, verilator_args);
+    sanitize_hex_plusarg(verilator_args);
 
     const std::string cycle_plusarg = "+cycle_limit=" + std::to_string(opts.max_cycles);
     verilator_args.push_back(cycle_plusarg);

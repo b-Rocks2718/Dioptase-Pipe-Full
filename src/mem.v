@@ -11,7 +11,8 @@ module mem(input clk, input clk_en,
     output sd_spi_cs, output sd_spi_clk, output sd_spi_mosi, input sd_spi_miso,
     output [15:0]interrupts
 );
-    localparam RAM_END = 27'h0020000; // 128KiB RAM window
+    // General RAM window: physical low memory up to the MMIO/display aperture.
+    localparam RAM_END = 27'h7FBD000; // exclusive
 
     localparam FRAMEBUFFER_START = 27'h7FBD000; // tile framebuffer (entries)
     localparam FRAMEBUFFER_SIZE = 27'd9600;     // 80 * 60 * 2 bytes
@@ -70,8 +71,10 @@ module mem(input clk, input clk_en,
     localparam SD_DATA_BASE = 27'h7FE5820;
     localparam SD_DATA_END = 27'h7FE583F;
 
-    // 128KiB low physical RAM window (0x0000000 - 0x001FFFF).
-    (* ram_style = "block" *) reg [31:0]ram[0:16'h7fff];
+    // Word-addressed RAM backing 0x0000000 .. RAM_END-1.
+    localparam [24:0] RAM_WORDS = RAM_END[26:2];
+    localparam [24:0] RAM_LAST_WORD = RAM_WORDS - 25'd1;
+    (* ram_style = "block" *) reg [31:0]ram[0:RAM_LAST_WORD];
 
     // Sprite backing storage (implemented sprites: 0..7).
     reg [31:0]sprite_0_data[0:16'h1ff];
@@ -302,6 +305,9 @@ module mem(input clk, input clk_en,
     // Use explicitly sized indices so Verilator does not infer oversized array selects.
     wire [11:0] display_frame_word_idx = {1'b0, display_frame_addr[12:2]};
     wire [12:0] display_tile_word_idx = pixel_idx[13:1];
+    wire [24:0] ram_word_idx_r0 = raddr0[26:2];
+    wire [24:0] ram_word_idx_r1 = raddr1[26:2];
+    wire [24:0] ram_word_idx_w = waddr[26:2];
     wire [8:0] sprite_word_idx_r = raddr1[10:2];
     wire [8:0] sprite_word_idx_w = waddr[10:2];
     wire [12:0] tile_word_idx_r = raddr1[14:2];
@@ -528,8 +534,8 @@ module mem(input clk, input clk_en,
         wen_buf <= wen;
         ren_buf <= ren;
 
-        ram_data0_out <= ram[raddr0[16:2]];
-        ram_data1_out <= ram[raddr1[16:2]];
+        ram_data0_out <= (raddr0 < RAM_END) ? ram[ram_word_idx_r0] : 32'd0;
+        ram_data1_out <= (raddr1 < RAM_END) ? ram[ram_word_idx_r1] : 32'd0;
         sprite_0_data1_out <= sprite_0_data[sprite_word_idx_r];
         sprite_1_data1_out <= sprite_1_data[sprite_word_idx_r];
         sprite_2_data1_out <= sprite_2_data[sprite_word_idx_r];
@@ -565,10 +571,10 @@ module mem(input clk, input clk_en,
         rdata1 <= data1_out;
 
         if (waddr < RAM_END) begin
-            if (wen[0]) ram[waddr[16:2]][7:0]   <= wdata[7:0];
-            if (wen[1]) ram[waddr[16:2]][15:8]  <= wdata[15:8];
-            if (wen[2]) ram[waddr[16:2]][23:16] <= wdata[23:16];
-            if (wen[3]) ram[waddr[16:2]][31:24] <= wdata[31:24];
+            if (wen[0]) ram[ram_word_idx_w][7:0]   <= wdata[7:0];
+            if (wen[1]) ram[ram_word_idx_w][15:8]  <= wdata[15:8];
+            if (wen[2]) ram[ram_word_idx_w][23:16] <= wdata[23:16];
+            if (wen[3]) ram[ram_word_idx_w][31:24] <= wdata[31:24];
         end else if (SPRITE_0_START <= waddr && waddr < SPRITE_1_START) begin
             if (wen[0]) sprite_0_data[sprite_word_idx_w][7:0]   <= wdata[7:0];
             if (wen[1]) sprite_0_data[sprite_word_idx_w][15:8]  <= wdata[15:8];

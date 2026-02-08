@@ -370,6 +370,21 @@ module decode(input clk, input clk_en,
   wire decode_is_absolute_mem =
     !atomic_inflight &&
     (decode_opcode == 5'd3 || decode_opcode == 5'd6 || decode_opcode == 5'd9);
+  // Only a subset of privileged instructions writes a GPR:
+  // crmv with mode 1/3 (rA <- crB / rA <- rB) and tlbr.
+  wire decode_priv_writes_gpr =
+    (decode_opcode == 5'd31) && (priv_type == 5'd1) &&
+    ((crmov_mode_type == 2'd1) || (crmov_mode_type == 2'd3));
+  wire decode_tlbr_writes_gpr =
+    (decode_opcode == 5'd31) && (priv_type == 5'd0) && (crmov_mode_type == 2'd0);
+  // `tgt_out_1` names either a GPR destination or a CR destination (for crmv).
+  // Keep it zero only for instructions with no architectural destination so
+  // execute forwarding cannot match bogus producers (for example after `bz`).
+  wire decode_writes_tgt_1 =
+    (decode_opcode == 5'd12) ? 1'b0 : // jmp immediate / conditional branch
+    (decode_opcode == 5'd15) ? 1'b0 : // syscall
+    (decode_opcode == 5'd31) ? (tgts_cr || decode_priv_writes_gpr || decode_tlbr_writes_gpr) :
+    !decode_is_store;
 
   initial begin
     bubble_out = 1;
@@ -464,7 +479,7 @@ module decode(input clk, input clk_en,
           s_2_out <= decode_slot_kill ? 5'd0 : s_2;
           cr_s_out <= decode_slot_kill ? 5'd0 : r_b;
 
-          tgt_out_1 <= (decode_slot_kill || decode_is_store || alias_postinc_load) ? 5'b0 : r_a;
+          tgt_out_1 <= (decode_slot_kill || !decode_writes_tgt_1 || alias_postinc_load) ? 5'b0 : r_a;
           tgt_out_2 <= (decode_slot_kill || !decode_is_absolute_mem || increment_type == 2'd0) ? 5'b0 : r_b;
 
           imm_out <= decode_slot_kill ? 32'd0 : imm;
