@@ -20,9 +20,6 @@ module pipelined_cpu(
   output reg clk_en
 );
 
-    wire [31:0]clock_divider;
-    reg [31:0]clk_count = 32'b0;
-
     wire [31:0]interrupt_state;
     wire [31:0]epc_curr;
     wire [31:0]efg_curr;
@@ -48,7 +45,6 @@ module pipelined_cpu(
     counter ctr(halt, clk, ret_val);
 
     // read from memory
-    wire [31:0]fetch_instr_out;
     wire [31:0]mem_out_0;
     wire [31:0]fetch_addr;
     wire [17:0]tlb_out_0;
@@ -64,6 +60,8 @@ module pipelined_cpu(
     wire [31:0]reg_write_data_2;
     wire reg_we_1;
     wire reg_we_2;
+    wire wb_no_alias_1;
+    wire wb_no_alias_2;
 
     wire branch;
     wire flush;
@@ -77,7 +75,6 @@ module pipelined_cpu(
     wire kmode;
     wire exec_is_sleep_out;
 
-    reg mem_ren = 1;
     assign mem_read0_addr = tlb_out_0;
     assign mem_read1_addr = tlb_out_1;
     assign mem_out_0 = mem_read0_data;
@@ -134,7 +131,7 @@ module pipelined_cpu(
     wire [31:0]mem_b_op1_out;
     wire [31:0]mem_b_op2_out;
 
-    tlb_fetch tlb_fetch(clk, clk_en, frontend_stop, flush, branch, branch_tgt, 
+    tlb_fetch tlb_fetch(clk, clk_en, frontend_stop, branch, branch_tgt,
       exc_in_wb, mem_out_1, rfe_in_wb, epc_curr, 
       fetch_addr, tlb_fetch_pc_out, tlb_fetch_slot_id_out, tlb_fetch_bubble_out, tlb_fetch_exc_out
     );
@@ -202,14 +199,15 @@ module pipelined_cpu(
       mem_out_0, fetch_b_bubble_out, fetch_b_pc_out, fetch_b_slot_id_out,
       reg_we_1, mem_b_tgt_out_1, reg_write_data_1,
       reg_we_2, mem_b_tgt_out_2, reg_write_data_2,
+      wb_no_alias_1, wb_no_alias_2,
       mem_b_tgts_cr_out,
       stall,
       fetch_b_exc_out,
 
-      epc_source, {28'b0, mem_b_flags_out}, tlb_addr_for_creg,
+      epc_source, {28'b0, mem_b_flags_out}, flags, tlb_addr_for_creg,
       exc_in_wb, tlb_exc_in_wb, interrupts,
       interrupt_in_wb, rfe_in_wb, rfi_in_wb,
-      clock_divider, pid, epc_curr, efg_curr, kmode, decode_exc_out,
+      pid, epc_curr, efg_curr, kmode, decode_exc_out,
       decode_op1_out, decode_op2_out, decode_cr_op_out, decode_pc_out, decode_slot_id_out,
       decode_opcode_out, decode_s_1_out, decode_s_2_out, decode_cr_s_out,
       decode_tgt_out_1, decode_tgt_out_2,
@@ -273,7 +271,7 @@ module pipelined_cpu(
       mem_b_result_out_1, mem_b_result_out_2,
       wb_result_out_1, wb_result_out_2, 
       mem_a_tgts_cr_out, mem_b_tgts_cr_out, wb_tgts_cr_out,
-      decode_pc_out, decode_slot_id_out, mem_a_opcode_out, mem_b_opcode_out,
+      decode_pc_out, decode_slot_id_out,
       decode_is_load_out, decode_is_store_out, decode_is_branch_out, 
       tlb_mem_bubble_out, tlb_mem_is_load_out,
       mem_a_bubble_out, mem_a_is_load_out, 
@@ -375,6 +373,7 @@ module pipelined_cpu(
       reg_write_data_1, reg_write_data_2,
       reg_we_1, wb_tgt_out_1, wb_result_out_1,
       reg_we_2, wb_tgt_out_2, wb_result_out_2,
+      wb_no_alias_1, wb_no_alias_2,
       wb_tgts_cr_out,
       exc_in_wb, interrupt_in_wb, rfe_in_wb, rfi_in_wb,
       tlb_exc_in_wb,
@@ -464,14 +463,8 @@ module pipelined_cpu(
         end
       end
 
-      // Clock divider creates single-cycle `clk_en` pulses for the whole core.
-      if (clk_count >= clock_divider) begin
-        clk_count <= 0;
-        clk_en <= 1;       // generate enable pulse
-      end else begin
-        clk_count <= clk_count + 1;
-        clk_en <= 0;
-      end
+      // Fixed clock-enable for now (future: memory-mapped clock divider).
+      clk_en <= 1'b1;
     end
 
 endmodule

@@ -20,18 +20,19 @@ module decode(input clk, input clk_en,
 
     input we1, input [4:0]target_1, input [31:0]write_data_1,
     input we2, input [4:0]target_2, input [31:0]write_data_2,
+    input wb_no_alias_1, input wb_no_alias_2,
     input cr_we,
 
     input stall,
     input [7:0]exc_in,
     
-    input [31:0]epc, input [31:0]efg, input [31:0]tlb_addr,
+    input [31:0]epc, input [31:0]efg, input [3:0]flags_live, input [31:0]tlb_addr,
     input exc_in_wb, input tlb_exc_in_wb,
     input [15:0]interrupts,
 
     input interrupt_in_wb, input rfe_in_wb, input rfi_in_wb,
     
-    output [31:0]cdv, output [31:0]pid, output [31:0]epc_curr, output [31:0]efg_curr, output kmode, 
+    output [31:0]pid, output [31:0]epc_curr, output [31:0]efg_curr, output kmode, 
     output reg [7:0]exc_out,
 
     output [31:0]d_1, output [31:0]d_2, output [31:0]cr_d, output reg [31:0]pc_out, output reg [31:0]slot_id_out,
@@ -100,9 +101,11 @@ module decode(input clk, input clk_en,
   reg [31:0]prev_live_instr;
   reg [31:0]prev_live_pc;
   reg [31:0]prev_live_slot_id;
+  // On replay catch-up, stale ALU words can briefly reappear for the same PC.
+  // Drop that single stale decode so dependent instructions observe the
+  // architecturally correct stream.
   wire replay_fix_drop = replay_pc_fix &&
-    (mem_out_0[31:27] == 5'd0) &&
-    (prev_live_instr[31:27] == 5'd0);
+    ((opcode == 5'd1) || (opcode == 5'd0));
   wire replay_dup_match = !atomic_active && !stall && !use_buf && !bubble_in &&
     (mem_out_0 == prev_live_instr) && (pc_in == prev_live_pc + 32'd4);
   // After the catch-up cycle, instruction memory can still present one extra
@@ -112,9 +115,12 @@ module decode(input clk, input clk_en,
   // appears on consecutive cycles, execute it once then bubble repeats.
   wire live_consecutive_dup = !atomic_active && !stall && !use_buf && !bubble_in &&
     prev_live_valid && (pc_in == prev_live_pc) && (mem_out_0 == prev_live_instr);
+  wire replay_alias_window = use_buf || was_stall || replay_pc_fix ||
+    replay_pc_fix_d1 || replay_pc_fix_d2 || replay_dup_match;
   // Keep stale replay copies attached to the prior live slot id so execute can
   // deduplicate by slot identity instead of full payload matching.
   wire replay_slot_alias = !atomic_active && !stall && !bubble_decode_in &&
+    replay_alias_window &&
     prev_live_valid && (instr_in == prev_live_instr) &&
     ((pc_decode_in == prev_live_pc) || (pc_decode_in == (prev_live_pc + 32'd4)));
   wire [31:0]front_slot_id_aligned = replay_slot_alias ? prev_live_slot_id : front_slot_id;
@@ -122,9 +128,6 @@ module decode(input clk, input clk_en,
   wire [4:0]opcode_raw = instr_in[31:27];
   wire [4:0]front_opcode = front_instr[31:27];
 
-  // Classify opcodes with `case` so unknown instruction words do not leak `x`
-  // into control signals. Hardware always sees 0/1 values here; this keeps
-  // simulation stable for speculative fetches that may later be squashed.
   reg opcode_is_valid;
   reg opcode_is_defined_invalid;
   reg is_mem;
@@ -133,9 +136,6 @@ module decode(input clk, input clk_en,
   reg is_syscall;
   reg is_priv;
   reg front_is_fetch_add;
-  reg front_is_swap_abs;
-  reg front_is_swap_rel;
-  reg front_is_swap_imm;
   reg front_is_swap;
 
   always @(*) begin
@@ -174,23 +174,11 @@ module decode(input clk, input clk_en,
     endcase
 
     front_is_fetch_add = 1'b0;
-    front_is_swap_abs = 1'b0;
-    front_is_swap_rel = 1'b0;
-    front_is_swap_imm = 1'b0;
     front_is_swap = 1'b0;
     case (front_opcode)
       5'd16, 5'd17, 5'd18: front_is_fetch_add = 1'b1;
-      5'd19: begin
-        front_is_swap_abs = 1'b1;
-        front_is_swap = 1'b1;
-      end
-      5'd20: begin
-        front_is_swap_rel = 1'b1;
-        front_is_swap = 1'b1;
-      end
-      5'd21: begin
-        front_is_swap_imm = 1'b1;
-        front_is_swap = 1'b1;
+      5'd19, 5'd20, 5'd21: front_is_swap = 1'b1;
+      default: begin
       end
     endcase
   end
@@ -225,12 +213,18 @@ module decode(input clk, input clk_en,
   wire is_load = is_mem && load_bit;
   wire is_store = is_mem && !load_bit;
   wire [4:0]priv_type = instr_dec[16:12]; // type of privileged instruction
+  // ISA: crmv must always access architectural r31 (never ksp alias).
+  wire reg_read_no_alias = is_priv && (priv_type == 5'd1);
 
   wire tgts_cr = is_priv && (priv_type == 5'd1) && ((crmov_mode_type == 2'd0) || (crmov_mode_type == 2'd2));
 
   wire [7:0]exc_code = instr_dec[7:0];
 
   wire [1:0]crmov_mode_type = instr_dec[11:10];
+  // IPI encodings currently retire as no-ops in this core.
+  wire is_ipi_n = is_priv && (priv_type == 5'd4) && (crmov_mode_type == 2'd0);
+  wire is_ipi_all = is_priv && (priv_type == 5'd4) && (crmov_mode_type == 2'd1);
+  wire is_ipi = is_ipi_n || is_ipi_all;
   wire syscall_exc_ok = (exc_code == 8'd1) && !bubble_decode_in;
 
   wire invalid_instr =
@@ -238,7 +232,8 @@ module decode(input clk, input clk_en,
     (is_alu && (((alu_op > 5'd18) && (opcode == 5'd1)) || ((alu_op > 5'd22) && (opcode == 5'd0)))) || // bad alu op
     (is_branch && (branch_code > 5'd18)) || // bad branch code
     (is_syscall && !syscall_exc_ok) || // bad syscall
-    (is_priv && (priv_type > 5'd3)); // bad privileged instruction
+    // bad privileged instruction
+    (is_priv && ((priv_type > 5'd4) || ((priv_type == 5'd4) && !is_ipi)));
 
   wire invalid_priv = is_priv && !kmode;
 
@@ -267,11 +262,9 @@ module decode(input clk, input clk_en,
   wire atomic_drain_dup = atomic_drain && !stall && !front_bubble &&
     (front_pc == atomic_drain_pc) && (front_instr == atomic_drain_instr);
 
-  wire is_fetch_add_v = (opcode == 5'd16) || (opcode == 5'd17) || (opcode == 5'd18);
   wire is_swap_abs = (opcode == 5'd19);
   wire is_swap_rel = (opcode == 5'd20);
   wire is_swap_imm = (opcode == 5'd21);
-  wire is_swap_v = is_swap_abs || is_swap_rel || is_swap_imm;
 
   assign decode_stall = atomic_inflight;
 
@@ -332,15 +325,16 @@ module decode(input clk, input clk_en,
         s_2, d_2,
         we1, target_1, write_data_1,
         we2, target_2, write_data_2,
+        kmode, reg_read_no_alias, wb_no_alias_1, wb_no_alias_2,
         stall, ret_val);
         
   cregfile cregfile(clk, clk_en,
         r_b, cr_d,
         cr_we, target_1, write_data_1,
         stall, exc_in_wb, tlb_exc_in_wb,
-        tlb_addr, epc, efg, interrupts,
+        tlb_addr, epc, efg, flags_live, interrupts,
         interrupt_in_wb, rfe_in_wb, rfi_in_wb,
-        kmode, cdv, interrupt_state, pid, epc_curr, efg_curr
+        kmode, interrupt_state, pid, epc_curr, efg_curr
   );
 
   wire [31:0]base_imm = 
@@ -425,12 +419,6 @@ module decode(input clk, input clk_en,
     atomic_step_out = 2'd0;
   end
 
-  wire priv_instr_tgts_ra = 
-    is_priv && (
-      (priv_type == 5'd0 && crmov_mode_type == 2'd0) || // tblr
-      (priv_type == 5'd1) // cr mov
-    );
-
   wire [7:0]interrupt_exc = (interrupt_state != 0) ? (
             interrupt_state[15] ? 8'hFF :
             interrupt_state[14] ? 8'hFE :
@@ -456,7 +444,9 @@ module decode(input clk, input clk_en,
   // 2) interrupt/tlb/priv exceptions keep slot live (bubble=0) for WB trap flow
   wire decode_has_exc = (interrupt_exc != 8'h0) || (exc_decode_in != 8'h0) || (exc_priv_instr != 8'h0);
   wire replay_drop = replay_fix_drop || replay_dup_drop || live_consecutive_dup || atomic_drain_dup;
-  wire decode_kill = flush || bubble_decode_in || replay_drop;
+  // IPI is intentionally squashed as a no-op in kernel mode for now.
+  wire ipi_noop_kill = is_ipi && kmode;
+  wire decode_kill = flush || bubble_decode_in || replay_drop || ipi_noop_kill;
   wire decode_slot_kill = decode_kill || decode_has_exc;
 
   always @(posedge clk) begin
@@ -543,8 +533,12 @@ module decode(input clk, input clk_en,
         // (hold while `was_stall`), and only add decode-stall hold.
         if (!was_stall && !(decode_stall && was_decode_stall)) begin
           instr_buf <= mem_out_0;
-          // Keep buffered instruction and buffered PC from the same cycle.
-          pc_buf <= pc_in;
+          // On stall entry, memory can already be one word ahead while PC
+          // metadata still points at the prior word. Bias buffered PC forward
+          // by one instruction in that specific case so replay keeps pairs aligned.
+          pc_buf <= (stall && prev_live_valid &&
+            (pc_in == prev_live_pc) && (mem_out_0 != prev_live_instr)) ?
+            (pc_in + 32'd4) : pc_in;
           slot_id_buf <= slot_id_in;
           bubble_buf <= bubble_in;
           exc_buf <= exc_in;
@@ -562,6 +556,14 @@ module decode(input clk, input clk_en,
         was_stall <= stall;
         was_was_stall <= was_stall;
         was_decode_stall <= decode_stall;
+`ifdef SIMULATION
+        if ($test$plusargs("decode_debug")) begin
+          $display("[decode] pc_in=%h pc_dec=%h sid_in=%0d sid_dec=%0d use_buf=%b stall=%b dstall=%b b_in=%b b_dec=%b op=%0d repfix=%b repdup=%b ldup=%b asid=%b kill=%b",
+            pc_in, pc_decode_in, slot_id_in, slot_id_decode_in, use_buf, stall, decode_stall,
+            bubble_in, bubble_decode_in, opcode, replay_fix_drop, replay_dup_drop,
+            live_consecutive_dup, replay_slot_alias, decode_slot_kill);
+        end
+`endif
 
       end else begin
         exc_out <= interrupt_exc;

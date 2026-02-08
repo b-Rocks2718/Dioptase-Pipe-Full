@@ -34,8 +34,6 @@ module execute(input clk, input clk_en, input halt,
     input mem_a_tgts_cr, input mem_b_tgts_cr, input wb_tgts_cr,
     
     input [31:0]decode_pc_out, input [31:0]slot_id,
-    input [4:0]mem_a_opcode_out,
-    input [4:0]mem_b_opcode_out,
 
     input is_load, input is_store, input is_branch, 
     input tlb_mem_bubble, input tlb_mem_is_load,
@@ -158,6 +156,8 @@ module execute(input clk, input clk_en, input halt,
   reg [31:0]atomic_fadd_sum_buf;
   reg stall_hist_1;
   reg stall_hist_2;
+  // Keep forwarding buffers valid for up to two cycles after a stall clears,
+  // so replayed slots can still see the most recent writeback values.
   wire stall_buf_valid = stall || stall_hist_1 || stall_hist_2;
 
   wire is_mem_w = (5'd3 <= opcode && opcode <= 5'd5);
@@ -293,7 +293,8 @@ module execute(input clk, input clk_en, input halt,
   wire exec_dup = replay_dedup_active && !opening_after_stall &&
     !bubble_in && !stall && !exc_in_wb && !rfe_in_wb && same_replay_slot;
 
-  // nonsense to make subtract immediate work how i want
+  // ISA subtract-immediate uses immediate as lhs and register as rhs.
+  // This mux keeps ALU op encoding unchanged while honoring that semantic.
   wire [31:0]lhs = (opcode == 5'd1 && alu_op == 5'd16) ? imm : atomic_op1;
   wire [31:0]rhs = ((opcode == 5'd1 && alu_op != 5'd16) || (opcode == 5'd2) || 
                   (5'd3 <= opcode && opcode <= 5'd11) || (opcode == 5'd22)) ? 
@@ -301,10 +302,21 @@ module execute(input clk, input clk_en, input halt,
 
   wire we_bit = is_store && !bubble_in && !exc_in_wb
                 && !rfe_in_wb && (exc_out == 8'd0) && !stall && !exec_dup;
+  wire crmv_writes_cr = is_crmov &&
+    ((crmov_mode_type == 2'd0) || (crmov_mode_type == 2'd2));
+  // cr9 (CID) is read-only; suppress architectural control-register writeback.
+  wire cr_write_allowed = !((tgt_1 == 5'd9) && crmv_writes_cr);
+  wire [31:0]crmv_write_data = crmov_reads_creg ? cr_op : op1;
+  // ISA: cr5 is FLG, so crmv writes to cr5 must update live ALU flags.
+  wire crmv_write_flg_live = crmv_writes_cr && (tgt_1 == 5'd5) &&
+    !bubble_in && !stall && !exc_in_wb && !rfe_in_wb &&
+    !halt && !exec_dup && (exc_in == 8'd0);
+  wire [31:0]flags_restore_mux = crmv_write_flg_live ? crmv_write_data : flags_restore;
+  wire flags_we = rfe_in_wb || crmv_write_flg_live;
 
   wire [31:0]alu_rslt;
   ALU ALU(clk, clk_en, opcode, alu_op, lhs, rhs, decode_pc_out, bubble_in, 
-    flags_restore, rfe_in_wb,
+    flags_restore_mux, flags_we,
     alu_rslt, flags);
 
   // A killed execute slot must not forward partial payload into later stages.
@@ -433,7 +445,7 @@ always @(posedge clk) begin
 
       is_load_out <= slot_kill ? 1'b0 : is_load;
       is_store_out <= slot_kill ? 1'b0 : is_store;
-      tgts_cr_out <= slot_kill ? 1'b0 : tgts_cr;
+      tgts_cr_out <= slot_kill ? 1'b0 : (tgts_cr && cr_write_allowed);
       priv_type_out <= slot_kill ? 5'd0 : priv_type;
       crmov_mode_type_out <= slot_kill ? 2'd0 : crmov_mode_type;
 
@@ -449,13 +461,13 @@ always @(posedge clk) begin
         (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd0);
 
       if (stall) begin
-        reg_tgt_buf_a_1 <= stall ? wb_tgt_1 : 0;
-        reg_tgt_buf_a_2 <= stall ? wb_tgt_2 : 0;
+        reg_tgt_buf_a_1 <= wb_tgt_1;
+        reg_tgt_buf_a_2 <= wb_tgt_2;
         reg_data_buf_a_1 <= wb_result_out_1;
         reg_data_buf_a_2 <= wb_result_out_2;
         tgts_cr_buf_a <= wb_tgts_cr;
-        reg_tgt_buf_b_1 <= stall ? reg_tgt_buf_a_1 : 0;
-        reg_tgt_buf_b_2 <= stall ? reg_tgt_buf_a_2 : 0;
+        reg_tgt_buf_b_1 <= reg_tgt_buf_a_1;
+        reg_tgt_buf_b_2 <= reg_tgt_buf_a_2;
         reg_data_buf_b_1 <= reg_data_buf_a_1;
         reg_data_buf_b_2 <= reg_data_buf_a_2;
         tgts_cr_buf_b <= tgts_cr_buf_a;
@@ -496,6 +508,14 @@ always @(posedge clk) begin
         last_is_fetch_add_atomic_sig <= is_fetch_add_atomic;
         last_atomic_step_sig <= atomic_step;
       end
+
+`ifdef SIMULATION
+      if ($test$plusargs("exec_debug")) begin
+        $display("[exec] sid=%0d op=%0d pc=%h stall=%b open=%b rda=%b same=%b dup=%b bub=%b exwb=%b rfe=%b",
+          slot_id, opcode, decode_pc_out, stall, opening_after_stall, replay_dedup_active,
+          same_replay_slot, exec_dup, bubble_in, exc_in_wb, rfe_in_wb);
+      end
+`endif
 
       stall_prev <= stall;
       stall_hist_2 <= stall_hist_1;

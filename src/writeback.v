@@ -26,6 +26,7 @@ module writeback(input clk, input clk_en, input halt, input bubble_in,
     
     output we1, output reg [4:0]wb_tgt_out_1, output reg [31:0]wb_result_out_1,
     output we2, output reg [4:0]wb_tgt_out_2, output reg [31:0]wb_result_out_2,
+    output wb_no_alias_1, output wb_no_alias_2,
     output reg wb_tgts_cr_out,
     output exc_in_wb, output interrupt_in_wb, output rfe_in_wb, output rfi_in_wb,
     output tlb_exc_in_wb,
@@ -38,17 +39,19 @@ module writeback(input clk, input clk_en, input halt, input bubble_in,
     wb_tgts_cr_out = 1'b0;
   end
 
-  reg [31:0]mem_result_buf;
-  reg [31:0]addr_buf;
-
   assign exc_in_wb = (exc_in != 8'd0) && !bubble_in;
   assign interrupt_in_wb = (exc_in[7:4] == 4'hf) && !bubble_in;
   assign rfe_in_wb = opcode == 5'd31 && priv_type == 5'd3 && !bubble_in && !exc_in_wb;
   assign rfi_in_wb = rfe_in_wb && crmov_mode_type[1] == 1'b1 && !bubble_in && !exc_in_wb;
   assign tlb_exc_in_wb = exc_in_wb && (exc_in == 8'h82 || exc_in == 8'h83);
+  wire crmov_gpr_write = (opcode == 5'd31) && (priv_type == 5'd1) &&
+    ((crmov_mode_type == 2'd1) || (crmov_mode_type == 2'd3)) &&
+    !bubble_in && !exc_in_wb;
   
   assign halt_out = (opcode == 5'd31) && (priv_type == 5'd2) && (crmov_mode_type == 2'd2) && !bubble_in && !exc_in_wb;
   assign sleep_out = (opcode == 5'd31) && (priv_type == 5'd2) && (crmov_mode_type == 2'd1) && !bubble_in && !exc_in_wb;
+  assign wb_no_alias_1 = crmov_gpr_write;
+  assign wb_no_alias_2 = 1'b0;
 
   always @(posedge clk) begin
     if (~halt && clk_en) begin
@@ -57,9 +60,6 @@ module writeback(input clk, input clk_en, input halt, input bubble_in,
       wb_result_out_1 <= result_out_1;
       wb_result_out_2 <= result_out_2;
       wb_tgts_cr_out <= tgts_cr && !bubble_in && !exc_in_wb;
-
-      mem_result_buf <= mem_result;
-      addr_buf <= addr;
     end
   end
 

@@ -13,7 +13,7 @@
 //   by 8 bytes, then emits one catch-up cycle at pc-4 on release.
 // - Slot ids follow the same replay shape so downstream dedup sees replay copies
 //   as older frontend work, not new instructions.
-module tlb_fetch(input clk, input clk_en, input stall, input flush,
+module tlb_fetch(input clk, input clk_en, input stall,
     input branch, input [31:0]branch_tgt, input interrupt, input [31:0]interrupt_vector,
     input rfe_in_wb, input [31:0]epc,
     output [31:0]fetch_addr, output reg [31:0]pc_out, output reg [31:0]slot_id_out,
