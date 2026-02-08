@@ -14,7 +14,7 @@ module tlb_memory(
     input tgts_cr, input [4:0]priv_type, input [1:0]crmov_mode_type,
     input [3:0]flags_in,
     input [31:0]op1, input [31:0]op2, input exc_in_wb, input rfe_in_wb,
-    input [5:0]tlb_read, input [7:0]tlb_exc_in, 
+    input [26:0]tlb_read, input [7:0]tlb_exc_in, 
     input exec_mem_re, input [31:0] exec_store_data, input [3:0] exec_mem_we,
     
     output reg [4:0]tgt_out_1, output reg [4:0]tgt_out_2,
@@ -71,7 +71,7 @@ module tlb_memory(
 
         // check for tlbr
         result_out_1 <= bubble_in ? 32'd0 :
-          (is_tlbr ? {26'b0, tlb_read} : result_in_1);
+          (is_tlbr ? {5'b0, tlb_read} : result_in_1);
         
         result_out_2 <= bubble_in ? 32'd0 : result_in_2;
         bubble_out <= (exc_in_wb || rfe_in_wb || halt) ? 1 : bubble_in;

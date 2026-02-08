@@ -16,6 +16,7 @@ module writeback(input clk, input clk_en, input halt, input bubble_in,
     
     output we1, output reg [4:0]wb_tgt_out_1, output reg [31:0]wb_result_out_1,
     output we2, output reg [4:0]wb_tgt_out_2, output reg [31:0]wb_result_out_2,
+    output reg wb_tgts_cr_out,
     output exc_in_wb, output interrupt_in_wb, output rfe_in_wb, output rfi_in_wb,
     output tlb_exc_in_wb,
     output halt_out, output sleep_out
@@ -24,6 +25,7 @@ module writeback(input clk, input clk_en, input halt, input bubble_in,
   initial begin
     wb_tgt_out_1 = 5'd0;
     wb_tgt_out_2 = 5'd0;
+    wb_tgts_cr_out = 1'b0;
   end
 
   reg [31:0]mem_result_buf;
@@ -44,6 +46,7 @@ module writeback(input clk, input clk_en, input halt, input bubble_in,
       wb_tgt_out_2 <= tgt_in_2;
       wb_result_out_1 <= result_out_1;
       wb_result_out_2 <= result_out_2;
+      wb_tgts_cr_out <= tgts_cr && !bubble_in && !exc_in_wb;
 
       mem_result_buf <= mem_result;
       addr_buf <= addr;

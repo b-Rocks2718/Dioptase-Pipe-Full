@@ -193,43 +193,73 @@ module execute(input clk, input clk_en, input halt,
     op2;
   wire fadd_add_step = is_atomic && is_fetch_add_atomic && (atomic_step == 2'd1);
   wire fadd_store_step = is_atomic && is_fetch_add_atomic && is_store;
+  wire is_crmov = (opcode == 5'd31) && (priv_type == 5'd1);
+  wire crmov_reads_creg = is_crmov &&
+    (crmov_mode_type == 2'd1 || crmov_mode_type == 2'd2);
+  wire [4:0]dep_s1 = crmov_reads_creg ? 5'd0 : s_1;
+  wire [4:0]dep_s2 = is_crmov ? 5'd0 : s_2;
 
-  // TODO: account for cr mov instructions
+  // Load-use stall checks apply only to true GPR dependencies.
+  // CR dependencies are handled by dedicated control-register forwarding.
   assign stall = !exc_in_wb && !rfe_in_wb && (
    // Dependencies on a load or tlbr must stall until a forwardable value exists.
    // With the dedicated tlb_memory stage, load data is not available until writeback.
-   ((((tgt_out_1 == s_1 ||
-     tgt_out_1 == s_2) &&
+   ((((tgt_out_1 == dep_s1 ||
+     tgt_out_1 == dep_s2) &&
      tgt_out_1 != 5'd0) || 
-     ((tgt_out_2 == s_1 ||
-     tgt_out_2 == s_2) &&
+     ((tgt_out_2 == dep_s1 ||
+     tgt_out_2 == dep_s2) &&
      tgt_out_2 != 5'd0)) &&
      (is_load_out || is_tlbr_out) && 
      !bubble_in && !bubble_out) ||
-  ((((tlb_mem_tgt_1 == s_1 ||
-     tlb_mem_tgt_1 == s_2) &&
+  ((((tlb_mem_tgt_1 == dep_s1 ||
+     tlb_mem_tgt_1 == dep_s2) &&
      tlb_mem_tgt_1 != 5'd0) ||
-     ((tlb_mem_tgt_2 == s_1 ||
-     tlb_mem_tgt_2 == s_2) &&
+     ((tlb_mem_tgt_2 == dep_s1 ||
+     tlb_mem_tgt_2 == dep_s2) &&
      tlb_mem_tgt_2 != 5'd0)) &&
      tlb_mem_is_load &&
      !bubble_in && !tlb_mem_bubble) ||
-  ((((mem_a_tgt_1 == s_1 ||
-     mem_a_tgt_1 == s_2) &&
+  ((((mem_a_tgt_1 == dep_s1 ||
+     mem_a_tgt_1 == dep_s2) &&
      mem_a_tgt_1 != 5'd0) || 
-     ((mem_a_tgt_2 == s_1 ||
-     mem_a_tgt_2 == s_2) &&
+     ((mem_a_tgt_2 == dep_s1 ||
+     mem_a_tgt_2 == dep_s2) &&
      mem_a_tgt_2 != 5'd0)) &&
      mem_a_load &&
      !bubble_in && !mem_a_bubble) ||
-  ((((mem_b_tgt_1 == s_1 ||
-     mem_b_tgt_1 == s_2) &&
+  ((((mem_b_tgt_1 == dep_s1 ||
+     mem_b_tgt_1 == dep_s2) &&
      mem_b_tgt_1 != 5'd0) || 
-     ((mem_b_tgt_2 == s_1 ||
-     mem_b_tgt_2 == s_2) &&
+     ((mem_b_tgt_2 == dep_s1 ||
+     mem_b_tgt_2 == dep_s2) &&
      mem_b_tgt_2 != 5'd0)) &&
      mem_b_load &&
      !bubble_in && !mem_b_bubble));
+
+  // Forward CR reads for crmv (rA, crB / crA, crB). This keeps CR RAW
+  // dependencies precise without stalling and preserves behavior under
+  // prolonged execute stalls via WB-captured buffers.
+  wire ex_cr_hit = crmov_reads_creg && (cr_s != 5'd0) &&
+    tgts_cr_out && (tgt_out_1 == cr_s);
+  wire mem_a_cr_hit = crmov_reads_creg && (cr_s != 5'd0) &&
+    mem_a_tgts_cr && (mem_a_tgt_1 == cr_s);
+  wire mem_b_cr_hit = crmov_reads_creg && (cr_s != 5'd0) &&
+    mem_b_tgts_cr && (mem_b_tgt_1 == cr_s);
+  wire wb_cr_hit = crmov_reads_creg && (cr_s != 5'd0) &&
+    wb_tgts_cr && (wb_tgt_1 == cr_s);
+  wire buf_a_cr_hit = crmov_reads_creg && (cr_s != 5'd0) && stall_buf_valid &&
+    tgts_cr_buf_a && (reg_tgt_buf_a_1 == cr_s);
+  wire buf_b_cr_hit = crmov_reads_creg && (cr_s != 5'd0) && stall_buf_valid &&
+    tgts_cr_buf_b && (reg_tgt_buf_b_1 == cr_s);
+  wire [31:0]cr_op =
+    ex_cr_hit ? result_1 :
+    mem_a_cr_hit ? mem_a_result_out_1 :
+    mem_b_cr_hit ? mem_b_result_out_1 :
+    wb_cr_hit ? wb_result_out_1 :
+    buf_a_cr_hit ? reg_data_buf_a_1 :
+    buf_b_cr_hit ? reg_data_buf_b_1 :
+    reg_out_cr;
 
   // Frontend replay can present the same decoded instruction multiple times
   // after a load stall. Track the first post-stall instruction signature and
@@ -353,10 +383,10 @@ always @(posedge clk) begin
               // jump and link
       result_1 <= bubble_in ? 32'd0 :
                   (opcode == 5'd13 || opcode == 5'd14) ? decode_pc_out + 32'd4 : 
-                  // crmov reading from control reg
-                  (opcode == 5'd31 && priv_type == 5'd1 && crmov_mode_type >= 2'd1) ? reg_out_cr :
-                  // crmov reading from normal reg
-                  (opcode == 5'd31 && priv_type == 5'd1 && crmov_mode_type == 2'd0) ? op1 :
+                  // crmov control-register source
+                  (is_crmov && crmov_reads_creg) ? cr_op :
+                  // crmov general-register source
+                  (is_crmov) ? op1 :
                   // everything else
                   alu_rslt;
 

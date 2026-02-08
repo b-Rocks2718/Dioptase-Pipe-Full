@@ -46,7 +46,7 @@ module cregfile(input clk, input clk_en,
     input [31:0]epc, input [31:0]efg, input [15:0]interrupts,
     input interrupt_in_wb, input rfe_in_wb, input rfi_in_wb,
     output kmode, output [31:0]cdv_out, output [31:0]interrupt_state,
-    output [11:0]pid
+    output [31:0]pid
     );
 
   reg [31:0]cregfile[0:5'b111];
@@ -63,7 +63,7 @@ module cregfile(input clk, input clk_en,
   end
 
   assign cdv_out = cregfile[6];
-  assign pid = cregfile[1][11:0];
+  assign pid = cregfile[1];
   assign kmode = (cregfile[0] != 32'd0);
 
   assign interrupt_state = cregfile[3][31] ?

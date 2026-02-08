@@ -18,7 +18,7 @@ module decode(input clk, input clk_en,
 
     input interrupt_in_wb, input rfe_in_wb, input rfi_in_wb,
     
-    output [31:0]cdv, output [11:0]pid, output kmode, 
+    output [31:0]cdv, output [31:0]pid, output kmode, 
     output reg [7:0]exc_out,
 
     output [31:0]d_1, output [31:0]d_2, output [31:0]cr_d, output reg [31:0]pc_out,
@@ -30,7 +30,7 @@ module decode(input clk, input clk_en,
     output reg is_load_out, output reg is_store_out, output reg is_branch_out,
     output reg is_post_inc_out, output reg tgts_cr_out,
     output reg [4:0]priv_type_out, output reg [1:0]crmov_mode_type_out,
-    output reg tlb_we, output reg tlbc, output [31:0]interrupt_state,
+    output reg tlb_we, output reg tlbi, output reg tlbc, output [31:0]interrupt_state,
     output reg is_atomic_out, output reg is_fetch_add_atomic_out,
     output reg [1:0]atomic_step_out, output decode_stall
   );
@@ -299,6 +299,7 @@ module decode(input clk, input clk_en,
     crmov_mode_type_out = 2'd0;
     bubble_out = 1'b1;
     tlb_we = 1'b0;
+    tlbi = 1'b0;
     tlbc = 1'b0;
     was_stall = 1'b0;
     was_was_stall = 1'b0;
@@ -386,8 +387,10 @@ module decode(input clk, input clk_en,
 
           tlb_we <= (!decode_kill) &&
             (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd1);
-          tlbc   <= (!decode_kill) &&
+          tlbi   <= (!decode_kill) &&
             (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd2);
+          tlbc   <= (!decode_kill) &&
+            (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd3);
 
           if (flush || bubble_decode_in) begin
             atomic_active <= 1'b0;

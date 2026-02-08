@@ -1,146 +1,183 @@
 `timescale 1ps/1ps
 
-module tlb(input clk, input clk_en,
-  input kmode, input [11:0]pid,
+module tlb(
+  input clk, input clk_en,
+  input kmode, input [31:0]pid,
   input [31:0]addr0, input [31:0]addr1, input [31:0]read_addr,
-  input we, input [31:0]write_data, input [7:0]exc_in, input clear,
-  input bubble1, input stall, 
-
+  input we, input [31:0]write_data, input invalidate, input [7:0]exc_in, input clear,
+  input addr1_read_req, input addr1_write_req,
   output reg [7:0]exc_out0, output reg [7:0]exc_out1,
-  output reg [17:0]addr0_out, output reg [17:0]addr1_out, output reg [5:0]read_addr_out
+  output reg [17:0]addr0_out, output reg [17:0]addr1_out,
+  output reg [26:0]read_addr_out
 );
-  // pid (12 bits) | addr (20 bits)
+  // TLB entry format (ISA-visible):
+  //   key   = PID[31:0] + VPN[19:0]
+  //   value = PPN[14:0] + FLAGS[11:0]
+  // FLAGS low bits are G/U/X/W/R at [4:0].
+  reg cache_valid[0:7];
+  reg [31:0]cache_pid[0:7];
+  reg [19:0]cache_vpn[0:7];
+  reg [26:0]cache_val[0:7];
 
-  // 1 bit (valid) + 32 bits (key) + 6 (value) = 39 bits
-
-  reg [38:0]cache[0:3'h7];
+  reg [2:0]eviction_tgt;
+  integer i;
 
   initial begin
-    begin
-      cache[0] = 39'b0;
-      cache[1] = 39'b0;
-      cache[2] = 39'b0;
-      cache[3] = 39'b0;
-      cache[4] = 39'b0;
-      cache[5] = 39'b0;
-      cache[6] = 39'b0;
-      cache[7] = 39'b0;
+    for (i = 0; i < 8; i = i + 1) begin
+      cache_valid[i] = 1'b0;
+      cache_pid[i] = 32'd0;
+      cache_vpn[i] = 20'd0;
+      cache_val[i] = 27'd0;
     end
-
+    eviction_tgt = 3'd0;
     exc_out0 = 8'd0;
     exc_out1 = 8'd0;
     addr0_out = 18'd0;
     addr1_out = 18'd0;
-    read_addr_out = 6'd0;
+    read_addr_out = 27'd0;
   end
 
-  reg [2:0]eviction_tgt = 3'b0;
+  wire [19:0]vpn0 = addr0[31:12];
+  wire [19:0]vpn1 = addr1[31:12];
+  wire [19:0]vpn_read = read_addr[31:12];
 
-  wire [31:0]key0 = {pid, addr0[31:12]};
-  wire [31:0]key1 = {pid, addr1[31:12]};
+  wire bypass_addr0 = kmode && (addr0[31:27] == 5'd0);
+  wire bypass_addr1 = kmode && (addr1[31:27] == 5'd0);
+  wire addr1_active = addr1_read_req || addr1_write_req;
 
-  wire is_bottom_addr0 = addr0 < 18'h30000;
-  wire is_bottom_addr1 = addr1 < 18'h30000;
+  reg match0_hit;
+  reg [26:0]match0_value;
+  reg match1_hit;
+  reg [26:0]match1_value;
+  reg read_hit;
+  reg [26:0]read_value;
 
-  wire is_exc = exc_out1 != 8'd0;
+  integer li;
+  always @(*) begin
+    // Match order mirrors emulator behavior:
+    // 1) PID-private entries
+    // 2) global entries for same VPN
+    match0_hit = 1'b0;
+    match0_value = 27'd0;
+    match1_hit = 1'b0;
+    match1_value = 27'd0;
+    read_hit = 1'b0;
+    read_value = 27'd0;
 
-  wire [3:0]addr0_index = 
-    (key0 == cache[0][37:6] && cache[0][38]) ? 4'h0 :
-    (key0 == cache[1][37:6] && cache[1][38]) ? 4'h1 :
-    (key0 == cache[2][37:6] && cache[2][38]) ? 4'h2 :
-    (key0 == cache[3][37:6] && cache[3][38]) ? 4'h3 :
-    (key0 == cache[4][37:6] && cache[4][38]) ? 4'h4 :
-    (key0 == cache[5][37:6] && cache[5][38]) ? 4'h5 :
-    (key0 == cache[6][37:6] && cache[6][38]) ? 4'h6 :
-    (key0 == cache[7][37:6] && cache[7][38]) ? 4'h7 :
-    4'hf;
+    for (li = 0; li < 8; li = li + 1) begin
+      if (!match0_hit && cache_valid[li] && (cache_pid[li] == pid) && (cache_vpn[li] == vpn0)) begin
+        match0_hit = 1'b1;
+        match0_value = cache_val[li];
+      end
+      if (!match1_hit && cache_valid[li] && (cache_pid[li] == pid) && (cache_vpn[li] == vpn1)) begin
+        match1_hit = 1'b1;
+        match1_value = cache_val[li];
+      end
+      if (!read_hit && cache_valid[li] && (cache_pid[li] == pid) && (cache_vpn[li] == vpn_read)) begin
+        read_hit = 1'b1;
+        read_value = cache_val[li];
+      end
+    end
 
-  wire [3:0]addr1_index = 
-    (key1 == cache[0][37:6] && cache[0][38]) ? 4'h0 :
-    (key1 == cache[1][37:6] && cache[1][38]) ? 4'h1 :
-    (key1 == cache[2][37:6] && cache[2][38]) ? 4'h2 :
-    (key1 == cache[3][37:6] && cache[3][38]) ? 4'h3 :
-    (key1 == cache[4][37:6] && cache[4][38]) ? 4'h4 :
-    (key1 == cache[5][37:6] && cache[5][38]) ? 4'h5 :
-    (key1 == cache[6][37:6] && cache[6][38]) ? 4'h6 :
-    (key1 == cache[7][37:6] && cache[7][38]) ? 4'h7 :
-    4'hf;
+    for (li = 0; li < 8; li = li + 1) begin
+      if (!match0_hit && cache_valid[li] && cache_val[li][4] && (cache_vpn[li] == vpn0)) begin
+        match0_hit = 1'b1;
+        match0_value = cache_val[li];
+      end
+      if (!match1_hit && cache_valid[li] && cache_val[li][4] && (cache_vpn[li] == vpn1)) begin
+        match1_hit = 1'b1;
+        match1_value = cache_val[li];
+      end
+      if (!read_hit && cache_valid[li] && cache_val[li][4] && (cache_vpn[li] == vpn_read)) begin
+        read_hit = 1'b1;
+        read_value = cache_val[li];
+      end
+    end
+  end
 
-  wire [3:0]addr2_index = 
-    (read_addr == cache[0][37:6] && cache[0][38]) ? 4'h0 :
-    (read_addr == cache[1][37:6] && cache[1][38]) ? 4'h1 :
-    (read_addr == cache[2][37:6] && cache[2][38]) ? 4'h2 :
-    (read_addr == cache[3][37:6] && cache[3][38]) ? 4'h3 :
-    (read_addr == cache[4][37:6] && cache[4][38]) ? 4'h4 :
-    (read_addr == cache[5][37:6] && cache[5][38]) ? 4'h5 :
-    (read_addr == cache[6][37:6] && cache[6][38]) ? 4'h6 :
-    (read_addr == cache[7][37:6] && cache[7][38]) ? 4'h7 :
-    4'hf;
+  wire fetch_perm_ok = (kmode || match0_value[3]) && match0_value[2];
+  wire fetch_fault = !bypass_addr0 && (!match0_hit || !fetch_perm_ok);
+
+  wire data_perm_ok = addr1_write_req ? match1_value[1] : match1_value[0];
+  wire data_user_ok = kmode || match1_value[3];
+  wire data_fault = addr1_active && !bypass_addr1 &&
+    (!match1_hit || !data_user_ok || !data_perm_ok);
+
+  wire [7:0]exc0_next = fetch_fault ? (kmode ? 8'h83 : 8'h82) : 8'd0;
+  wire [7:0]exc1_next = (exc_in != 8'd0) ? exc_in :
+    (data_fault ? (kmode ? 8'h83 : 8'h82) : 8'd0);
+
+  // Physical memory bus is 18-bit in this FPGA pipeline implementation.
+  // ISA TLB value keeps full 15-bit PPN; low 6 bits are used by this memory bus.
+  wire [17:0]translated_addr0 = {match0_value[17:12], addr0[11:0]};
+  wire [17:0]translated_addr1 = {match1_value[17:12], addr1[11:0]};
+
+  wire [17:0]addr0_phys_next = bypass_addr0 ? addr0[17:0] :
+    (match0_hit ? translated_addr0 : 18'd0);
+  wire [17:0]addr1_phys_next = bypass_addr1 ? addr1[17:0] :
+    (match1_hit ? translated_addr1 : addr1[17:0]);
+
+  reg write_match_found;
+  reg [2:0]write_match_idx;
+  always @(*) begin
+    write_match_found = 1'b0;
+    write_match_idx = 3'd0;
+
+    // Global writes replace existing global VPN entries.
+    // Private writes replace existing PID+VPN private entries.
+    if (write_data[4]) begin
+      for (li = 0; li < 8; li = li + 1) begin
+        if (!write_match_found && cache_valid[li] && cache_val[li][4] &&
+            (cache_vpn[li] == vpn_read)) begin
+          write_match_found = 1'b1;
+          write_match_idx = li[2:0];
+        end
+      end
+    end else begin
+      for (li = 0; li < 8; li = li + 1) begin
+        if (!write_match_found && cache_valid[li] && !cache_val[li][4] &&
+            (cache_pid[li] == pid) && (cache_vpn[li] == vpn_read)) begin
+          write_match_found = 1'b1;
+          write_match_idx = li[2:0];
+        end
+      end
+    end
+  end
+
+  wire [2:0]write_idx = write_match_found ? write_match_idx : eviction_tgt;
 
   always @(posedge clk) begin
     if (clk_en) begin
-      if (we && !clear) begin
-        cache[eviction_tgt] <= {1'b1, read_addr, write_data[5:0]};
-        eviction_tgt <= eviction_tgt + 3'd1;
-      end else if (clear) begin
-        cache[0] <= 39'b0;
-        cache[1] <= 39'b0;
-        cache[2] <= 39'b0;
-        cache[3] <= 39'b0;
-        cache[4] <= 39'b0;
-        cache[5] <= 39'b0;
-        cache[6] <= 39'b0;
-        cache[7] <= 39'b0;
+      if (clear) begin
+        for (i = 0; i < 8; i = i + 1) begin
+          cache_valid[i] <= 1'b0;
+        end
+        eviction_tgt <= 3'd0;
+      end else if (invalidate) begin
+        // Match emulator invalidation behavior: invalidate PID+VPN private
+        // entry and any global entry with the same VPN.
+        for (i = 0; i < 8; i = i + 1) begin
+          if (cache_valid[i] &&
+              (cache_vpn[i] == vpn_read) &&
+              (cache_val[i][4] || (cache_pid[i] == pid))) begin
+            cache_valid[i] <= 1'b0;
+          end
+        end
+      end else if (we) begin
+        cache_valid[write_idx] <= 1'b1;
+        cache_pid[write_idx] <= pid;
+        cache_vpn[write_idx] <= vpn_read;
+        cache_val[write_idx] <= write_data[26:0];
+        if (!write_match_found) begin
+          eviction_tgt <= eviction_tgt + 3'd1;
+        end
       end
 
-      exc_out0 <= (addr0_index == 4'hf && !(is_bottom_addr0 && kmode)) ? 
-        // tlb miss exception
-        ( kmode ? 8'h83 : // kmiss
-                  8'h82   // umiss
-        ) : 8'd0;
-
-      exc_out1 <= 
-        (exc_in != 8'd0) ? exc_in : (
-        (addr1_index == 4'hf  && !(is_bottom_addr1 && kmode) && !bubble1) ? 
-          // tlb miss exception
-          ( kmode ? 8'h83 : // kmiss
-                    8'h82   // umiss
-          ) : 8'd0);
-
-      addr0_out <= (is_bottom_addr0 && kmode) ? addr0[17:0] :
-        {((addr0_index == 4'd0) ? cache[0][5:0] :
-        (addr0_index == 4'd1) ? cache[1][5:0] :
-        (addr0_index == 4'd2) ? cache[2][5:0] :
-        (addr0_index == 4'd3) ? cache[3][5:0] :
-        (addr0_index == 4'd4) ? cache[4][5:0] :
-        (addr0_index == 4'd5) ? cache[5][5:0] :
-        (addr0_index == 4'd6) ? cache[6][5:0] :
-        (addr0_index == 4'd7) ? cache[7][5:0] :
-        6'd0), addr0[11:0]};
-
-      addr1_out <=
-        is_exc ? {8'b0, exc_out1, 2'b0} : 
-        (is_bottom_addr1 && kmode) ? addr1[17:0] :
-        {((addr1_index == 4'd0) ? cache[0][5:0] :
-        (addr1_index == 4'd1) ? cache[1][5:0] :
-        (addr1_index == 4'd2) ? cache[2][5:0] :
-        (addr1_index == 4'd3) ? cache[3][5:0] :
-        (addr1_index == 4'd4) ? cache[4][5:0] :
-        (addr1_index == 4'd5) ? cache[5][5:0] :
-        (addr1_index == 4'd6) ? cache[6][5:0] :
-        (addr1_index == 4'd7) ? cache[7][5:0] :
-        6'd0), addr1[11:0]};
-
-      read_addr_out <= 
-        (addr2_index == 4'd0) ? cache[0][5:0] :
-        (addr2_index == 4'd1) ? cache[1][5:0] :
-        (addr2_index == 4'd2) ? cache[2][5:0] :
-        (addr2_index == 4'd3) ? cache[3][5:0] :
-        (addr2_index == 4'd4) ? cache[4][5:0] :
-        (addr2_index == 4'd5) ? cache[5][5:0] :
-        (addr2_index == 4'd6) ? cache[6][5:0] :
-        (addr2_index == 4'd7) ? cache[7][5:0] :
-        6'd0;
+      exc_out0 <= exc0_next;
+      exc_out1 <= exc1_next;
+      addr0_out <= addr0_phys_next;
+      addr1_out <= (exc1_next != 8'd0) ? {8'b0, exc1_next, 2'b0} : addr1_phys_next;
+      read_addr_out <= read_hit ? read_value : 27'd0;
     end
   end
 

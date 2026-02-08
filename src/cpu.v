@@ -18,7 +18,7 @@ module pipelined_cpu(
       clk_en = 1;
     end
 
-    wire [11:0]pid;
+    wire [31:0]pid;
     wire [3:0]tlb_mem_flags_out;
     wire [3:0]mem_a_flags_out;
     wire [3:0]mem_b_flags_out;
@@ -98,22 +98,18 @@ module pipelined_cpu(
     wire [31:0]exec_op1;
     wire [31:0]exec_op2;
 
-    wire [5:0]tlb_read;
+    wire [26:0]tlb_read;
 
     wire [7:0]decode_exc_out;
 
-    wire decode_tlb_we_out; 
+    wire decode_tlb_we_out;
+    wire decode_tlbi_out;
     wire decode_tlbc_out;
     wire decode_bubble_out;
-    tlb tlb(clk, clk_en, kmode, pid,
-      fetch_addr, addr, exec_op1, 
-      decode_tlb_we_out, exec_op2, 
-      decode_exc_out, decode_tlbc_out,
-      decode_bubble_out, stall,
-      exc_tlb_0, exc_tlb_1,
-      tlb_out_0, tlb_out_1, tlb_read
-    );
-
+    wire exec_mem_re;
+    wire [31:0]exec_store_data;
+    wire [3:0]exec_mem_we;
+    wire tlb_addr1_write_req = (exec_mem_we != 4'd0);
     wire [31:0]tlb_mem_op1_out;
     wire [31:0]tlb_mem_op2_out;
     wire [31:0]mem_a_op1_out;
@@ -197,7 +193,7 @@ module pipelined_cpu(
       decode_is_load_out, decode_is_store_out, decode_is_branch_out,
       decode_is_post_inc_out, decode_tgts_cr_out, 
       decode_priv_type_out, decode_crmov_mode_type_out,
-      decode_tlb_we_out, decode_tlbc_out, interrupt_state,
+      decode_tlb_we_out, decode_tlbi_out, decode_tlbc_out, interrupt_state,
       decode_is_atomic_out, decode_is_fetch_add_atomic_out, decode_atomic_step_out,
       decode_stall
     );
@@ -296,10 +292,6 @@ module pipelined_cpu(
     wire [1:0]tlb_mem_crmov_mode_type_out;
     wire [1:0]mem_a_crmov_mode_type_out;
     wire [1:0]mem_b_crmov_mode_type_out;
-    wire exec_mem_re; 
-    wire [31:0]exec_store_data; 
-    wire [3:0]exec_mem_we;
-
     tlb_memory tlb_memory(clk, clk_en, halt_or_sleep,
       exec_bubble_out, exec_opcode_out, exec_tgt_out_1, exec_tgt_out_2,
       exec_result_out_1, exec_result_out_2, addr,
@@ -358,9 +350,28 @@ module pipelined_cpu(
       reg_write_data_1, reg_write_data_2,
       reg_we_1, wb_tgt_out_1, wb_result_out_1,
       reg_we_2, wb_tgt_out_2, wb_result_out_2,
+      wb_tgts_cr_out,
       exc_in_wb, interrupt_in_wb, rfe_in_wb, rfi_in_wb,
       tlb_exc_in_wb,
       wb_halt, wb_sleep
+    );
+
+    // TLB keying must observe in-flight PID updates from older crmv ops.
+    wire [31:0]pid_for_tlb =
+      (exec_tgts_cr_out && (exec_tgt_out_1 == 5'd1)) ? exec_result_out_1 :
+      (tlb_mem_tgts_cr_out && (tlb_mem_tgt_out_1 == 5'd1)) ? tlb_mem_result_out_1 :
+      (mem_a_tgts_cr_out && (mem_a_tgt_out_1 == 5'd1)) ? mem_a_result_out_1 :
+      (mem_b_tgts_cr_out && (mem_b_tgt_out_1 == 5'd1)) ? mem_b_result_out_1 :
+      (wb_tgts_cr_out && (wb_tgt_out_1 == 5'd1)) ? wb_result_out_1 :
+      pid;
+
+    tlb tlb(clk, clk_en, kmode, pid_for_tlb,
+      fetch_addr, addr, exec_op1,
+      decode_tlb_we_out, exec_op2, decode_tlbi_out,
+      decode_exc_out, decode_tlbc_out,
+      exec_mem_re, tlb_addr1_write_req,
+      exc_tlb_0, exc_tlb_1,
+      tlb_out_0, tlb_out_1, tlb_read
     );
 
     // Frontend must stop once a halt instruction is already in flight so
