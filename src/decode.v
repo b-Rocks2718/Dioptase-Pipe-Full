@@ -1,9 +1,22 @@
 `timescale 1ps/1ps
 
+// Decode stage.
+//
+// Purpose:
+// - Parse ISA fields from fetched instruction words.
+// - Read GPR/CR operands and produce control metadata for execute.
+// - Crack atomic fetch-add/swap instructions into decode-local micro-ops.
+// - Keep PC/instruction/slot alignment stable across replay stalls.
+//
+// Contracts:
+// - `decode_stall` means decode owns frontend progress (atomic crack in flight).
+// - `slot_id_out` identifies the logical fetched slot; replay copies reuse the
+//   prior slot id so execute can deduplicate stale replays.
+// - Exceptions generated here keep bubble cleared (live faulting slot).
 module decode(input clk, input clk_en,
     input flush, input halt,
 
-    input [31:0]mem_out_0, input bubble_in, input [31:0]pc_in,
+    input [31:0]mem_out_0, input bubble_in, input [31:0]pc_in, input [31:0]slot_id_in,
 
     input we1, input [4:0]target_1, input [31:0]write_data_1,
     input we2, input [4:0]target_2, input [31:0]write_data_2,
@@ -18,10 +31,10 @@ module decode(input clk, input clk_en,
 
     input interrupt_in_wb, input rfe_in_wb, input rfi_in_wb,
     
-    output [31:0]cdv, output [31:0]pid, output kmode, 
+    output [31:0]cdv, output [31:0]pid, output [31:0]epc_curr, output [31:0]efg_curr, output kmode, 
     output reg [7:0]exc_out,
 
-    output [31:0]d_1, output [31:0]d_2, output [31:0]cr_d, output reg [31:0]pc_out,
+    output [31:0]d_1, output [31:0]d_2, output [31:0]cr_d, output reg [31:0]pc_out, output reg [31:0]slot_id_out,
     output reg [4:0]opcode_out, output reg [4:0]s_1_out, output reg [4:0]s_2_out, 
     output reg [4:0]cr_s_out,
     output reg [4:0]tgt_out_1, output reg [4:0]tgt_out_2,
@@ -44,32 +57,40 @@ module decode(input clk, input clk_en,
   reg [1:0]atomic_step;
   reg [31:0]atomic_instr;
   reg [31:0]atomic_pc;
+  reg [31:0]atomic_slot_id;
   reg atomic_drain;
   reg [31:0]atomic_drain_instr;
   reg [31:0]atomic_drain_pc;
 
+  // When execute/decode are stalled, replay from local buffer so this stage
+  // decodes a stable instruction/PC pair until the hold releases.
   wire use_buf = was_stall || was_decode_stall;
   wire [31:0]front_instr;
   wire [31:0]front_pc;
+  wire [31:0]front_slot_id;
   wire front_bubble;
   wire [7:0]front_exc;
   wire [31:0]instr_in;
   wire [31:0]pc_decode_in;
+  wire [31:0]slot_id_decode_in;
   wire bubble_decode_in;
   wire [7:0]exc_decode_in;
   reg [31:0]instr_buf;
   reg [31:0]pc_buf;
+  reg [31:0]slot_id_buf;
   reg bubble_buf;
   reg [7:0]exc_buf;
   assign front_instr = use_buf ? instr_buf : mem_out_0;
   assign front_pc = use_buf ? pc_buf : pc_in;
+  assign front_slot_id = use_buf ? slot_id_buf : slot_id_in;
   assign front_bubble = use_buf ? bubble_buf : bubble_in;
   assign front_exc = use_buf ? exc_buf : exc_in;
   assign instr_in = atomic_active ? atomic_instr : front_instr;
   assign pc_decode_in = atomic_active ? atomic_pc : front_pc;
+  assign slot_id_decode_in = atomic_active ? atomic_slot_id : front_slot_id_aligned;
   assign bubble_decode_in = atomic_active ? 1'b0 : front_bubble;
   assign exc_decode_in = atomic_active ? 8'h0 : front_exc;
-  // One-cycle PC/instruction catch-up on stall replay. Guard with was_was_stall
+  // One-cycle PC/instruction catch-up on stall replay. Guard with `was_was_stall`
   // so this only applies on the first live cycle after replay.
   wire replay_pc_fix = !atomic_active && was_was_stall && !use_buf && !stall &&
     (pc_in == pc_buf) && (mem_out_0 != instr_buf) && !bubble_in;
@@ -78,6 +99,7 @@ module decode(input clk, input clk_en,
   reg prev_live_valid;
   reg [31:0]prev_live_instr;
   reg [31:0]prev_live_pc;
+  reg [31:0]prev_live_slot_id;
   wire replay_fix_drop = replay_pc_fix &&
     (mem_out_0[31:27] == 5'd0) &&
     (prev_live_instr[31:27] == 5'd0);
@@ -90,53 +112,132 @@ module decode(input clk, input clk_en,
   // appears on consecutive cycles, execute it once then bubble repeats.
   wire live_consecutive_dup = !atomic_active && !stall && !use_buf && !bubble_in &&
     prev_live_valid && (pc_in == prev_live_pc) && (mem_out_0 == prev_live_instr);
+  // Keep stale replay copies attached to the prior live slot id so execute can
+  // deduplicate by slot identity instead of full payload matching.
+  wire replay_slot_alias = !atomic_active && !stall && !bubble_decode_in &&
+    prev_live_valid && (instr_in == prev_live_instr) &&
+    ((pc_decode_in == prev_live_pc) || (pc_decode_in == (prev_live_pc + 32'd4)));
+  wire [31:0]front_slot_id_aligned = replay_slot_alias ? prev_live_slot_id : front_slot_id;
 
-  wire [4:0]opcode = instr_in[31:27];
+  wire [4:0]opcode_raw = instr_in[31:27];
+  wire [4:0]front_opcode = front_instr[31:27];
+
+  // Classify opcodes with `case` so unknown instruction words do not leak `x`
+  // into control signals. Hardware always sees 0/1 values here; this keeps
+  // simulation stable for speculative fetches that may later be squashed.
+  reg opcode_is_valid;
+  reg opcode_is_defined_invalid;
+  reg is_mem;
+  reg is_branch;
+  reg is_alu;
+  reg is_syscall;
+  reg is_priv;
+  reg front_is_fetch_add;
+  reg front_is_swap_abs;
+  reg front_is_swap_rel;
+  reg front_is_swap_imm;
+  reg front_is_swap;
+
+  always @(*) begin
+    opcode_is_valid = 1'b0;
+    opcode_is_defined_invalid = 1'b0;
+    is_mem = 1'b0;
+    is_branch = 1'b0;
+    is_alu = 1'b0;
+    is_syscall = 1'b0;
+    is_priv = 1'b0;
+
+    case (opcode_raw)
+      5'd0, 5'd1: begin
+        opcode_is_valid = 1'b1;
+        is_alu = 1'b1;
+      end
+      5'd2: opcode_is_valid = 1'b1;
+      5'd3, 5'd4, 5'd5, 5'd6, 5'd7, 5'd8, 5'd9, 5'd10, 5'd11: begin
+        opcode_is_valid = 1'b1;
+        is_mem = 1'b1;
+      end
+      5'd12, 5'd13, 5'd14: begin
+        opcode_is_valid = 1'b1;
+        is_branch = 1'b1;
+      end
+      5'd15: begin
+        opcode_is_valid = 1'b1;
+        is_syscall = 1'b1;
+      end
+      5'd16, 5'd17, 5'd18, 5'd19, 5'd20, 5'd21, 5'd22: opcode_is_valid = 1'b1;
+      5'd23, 5'd24, 5'd25, 5'd26, 5'd27, 5'd28, 5'd29, 5'd30: opcode_is_defined_invalid = 1'b1;
+      5'd31: begin
+        opcode_is_valid = 1'b1;
+        is_priv = 1'b1;
+      end
+    endcase
+
+    front_is_fetch_add = 1'b0;
+    front_is_swap_abs = 1'b0;
+    front_is_swap_rel = 1'b0;
+    front_is_swap_imm = 1'b0;
+    front_is_swap = 1'b0;
+    case (front_opcode)
+      5'd16, 5'd17, 5'd18: front_is_fetch_add = 1'b1;
+      5'd19: begin
+        front_is_swap_abs = 1'b1;
+        front_is_swap = 1'b1;
+      end
+      5'd20: begin
+        front_is_swap_rel = 1'b1;
+        front_is_swap = 1'b1;
+      end
+      5'd21: begin
+        front_is_swap_imm = 1'b1;
+        front_is_swap = 1'b1;
+      end
+    endcase
+  end
+  wire opcode_known = opcode_is_valid || opcode_is_defined_invalid;
+  // Decode-time sanitization: when frontend presents an unknown instruction
+  // word (simulation artifact), decode it as NOP-shaped data so control logic
+  // stays deterministic without requiring x-specific squashing rules.
+  wire [31:0]instr_dec = opcode_known ? instr_in : 32'd0;
+  wire [4:0]opcode = instr_dec[31:27];
 
   // branch instruction has r_a and r_b in a different spot than normal
-  wire [4:0]r_a = (opcode == 5'd13 || opcode == 5'd14) ? instr_in[9:5] : instr_in[26:22];
-  wire [4:0]r_b = (opcode == 5'd13 || opcode == 5'd14) ? instr_in[4:0] : instr_in[21:17];
+  wire [4:0]r_a = (opcode == 5'd13 || opcode == 5'd14) ? instr_dec[9:5] : instr_dec[26:22];
+  wire [4:0]r_b = (opcode == 5'd13 || opcode == 5'd14) ? instr_dec[4:0] : instr_dec[21:17];
   
   // alu_op location is different for alu-reg and alu-imm instructions
-  wire [4:0]alu_op = (opcode == 5'd0) ? instr_in[9:5] : instr_in[16:12];
+  wire [4:0]alu_op = (opcode == 5'd0) ? instr_dec[9:5] : instr_dec[16:12];
   
   wire is_bitwise = (alu_op <= 5'd6);
   wire is_shift = (5'd7 <= alu_op && alu_op <= 5'd13);
   wire is_arithmetic = (5'd14 <= alu_op && alu_op <= 5'd18);
 
-  wire [4:0]alu_shift = { instr_in[9:8], 3'b0};
+  wire [4:0]alu_shift = { instr_dec[9:8], 3'b0};
 
-  wire [4:0]r_c = instr_in[4:0];
+  wire [4:0]r_c = instr_dec[4:0];
 
-  wire [4:0]branch_code = instr_in[26:22];
+  wire [4:0]branch_code = instr_dec[26:22];
 
   // bit to distinguish loads from stores
-  wire load_bit = (opcode == 5'd5 || opcode == 5'd8 || opcode == 5'd11) ? 
-                  instr_in[21] : instr_in[16];
-
-  wire is_mem = (5'd3 <= opcode && opcode <= 5'd11);
-  wire is_branch = (5'd12 <= opcode && opcode <= 5'd14);
-  wire is_alu = (opcode == 5'd0 || opcode == 5'd1);
+  wire load_bit = (opcode == 5'd5 || opcode == 5'd8 || opcode == 5'd11) ?
+                  instr_dec[21] : instr_dec[16];
 
   wire is_load = is_mem && load_bit;
   wire is_store = is_mem && !load_bit;
-
-  wire is_syscall = (opcode == 5'd15);
-
-  wire is_priv = (opcode == 5'd31);
-  wire [4:0]priv_type = instr_in[16:12]; // type of privileged instruction
+  wire [4:0]priv_type = instr_dec[16:12]; // type of privileged instruction
 
   wire tgts_cr = is_priv && (priv_type == 5'd1) && ((crmov_mode_type == 2'd0) || (crmov_mode_type == 2'd2));
 
-  wire [7:0]exc_code = instr_in[7:0];
+  wire [7:0]exc_code = instr_dec[7:0];
 
-  wire [1:0]crmov_mode_type = instr_in[11:10];
+  wire [1:0]crmov_mode_type = instr_dec[11:10];
+  wire syscall_exc_ok = (exc_code == 8'd1) && !bubble_decode_in;
 
-  wire invalid_instr = 
-    (5'd23 <= opcode && opcode <= 5'd30) || // bad opcode
+  wire invalid_instr =
+    opcode_is_defined_invalid || // architecturally invalid opcode values
     (is_alu && (((alu_op > 5'd18) && (opcode == 5'd1)) || ((alu_op > 5'd22) && (opcode == 5'd0)))) || // bad alu op
     (is_branch && (branch_code > 5'd18)) || // bad branch code
-    (is_syscall && (exc_code != 8'd1)) || // bad syscall
+    (is_syscall && !syscall_exc_ok) || // bad syscall
     (is_priv && (priv_type > 5'd3)); // bad privileged instruction
 
   wire invalid_priv = is_priv && !kmode;
@@ -148,19 +249,15 @@ module decode(input clk, input clk_en,
     0);
 
   // 0 => offset, 1 => preincrement, 2 => postincrement
-  wire [1:0]increment_type = instr_in[15:14];
+  wire [1:0]increment_type = instr_dec[15:14];
 
-  wire [1:0]mem_shift = instr_in[13:12];
+  wire [1:0]mem_shift = instr_dec[13:12];
 
   // Atomic families are cracked in decode:
   // - fetch-add: load -> add -> store
   // - swap: load -> store
-  wire [4:0]front_opcode = front_instr[31:27];
-  wire front_is_fetch_add = (front_opcode == 5'd16 || front_opcode == 5'd17 || front_opcode == 5'd18);
-  wire front_is_swap_abs = (front_opcode == 5'd19);
-  wire front_is_swap_rel = (front_opcode == 5'd20);
-  wire front_is_swap_imm = (front_opcode == 5'd21);
-  wire front_is_swap = front_is_swap_abs || front_is_swap_rel || front_is_swap_imm;
+  // A frontend slot is not eligible to start a crack sequence if it is already
+  // being discarded by redirect/replay filters.
   wire front_kill = flush || front_bubble || replay_fix_drop || replay_dup_drop || live_consecutive_dup;
   wire start_atomic = !atomic_active && !atomic_drain && !stall && !front_kill &&
     (front_is_fetch_add || front_is_swap);
@@ -170,24 +267,22 @@ module decode(input clk, input clk_en,
   wire atomic_drain_dup = atomic_drain && !stall && !front_bubble &&
     (front_pc == atomic_drain_pc) && (front_instr == atomic_drain_instr);
 
-  wire is_fetch_add = (opcode == 5'd16 || opcode == 5'd17 || opcode == 5'd18);
+  wire is_fetch_add_v = (opcode == 5'd16) || (opcode == 5'd17) || (opcode == 5'd18);
   wire is_swap_abs = (opcode == 5'd19);
   wire is_swap_rel = (opcode == 5'd20);
   wire is_swap_imm = (opcode == 5'd21);
-  wire is_swap = is_swap_abs || is_swap_rel || is_swap_imm;
-  wire is_fetch_add_v = (is_fetch_add == 1'b1);
-  wire is_swap_v = (is_swap == 1'b1);
+  wire is_swap_v = is_swap_abs || is_swap_rel || is_swap_imm;
 
   assign decode_stall = atomic_inflight;
 
   wire [4:0]swap_mem_opcode = is_swap_abs ? 5'd3 : (is_swap_rel ? 5'd4 : 5'd5);
   // assembler/emulator encoding uses [21:17] for swap data register and
   // [16:12] for absolute/relative swap base.
-  wire [4:0]swap_base = (is_swap_abs || is_swap_rel) ? instr_in[16:12] : 5'd0;
-  wire [4:0]swap_data = instr_in[21:17];
+  wire [4:0]swap_base = (is_swap_abs || is_swap_rel) ? instr_dec[16:12] : 5'd0;
+  wire [4:0]swap_data = instr_dec[21:17];
   wire [31:0]swap_imm = is_swap_imm ?
-    { {15{instr_in[16]}}, instr_in[16:0] } :
-    { {20{instr_in[11]}}, instr_in[11:0] };
+    { {15{instr_dec[16]}}, instr_dec[16:0] } :
+    { {20{instr_dec[11]}}, instr_dec[11:0] };
   wire swap_load_step = atomic_inflight && !atomic_fetch_add_mode && (atomic_step_decode == 2'd0);
   wire swap_store_step = atomic_inflight && !atomic_fetch_add_mode && (atomic_step_decode == 2'd1);
 
@@ -196,11 +291,11 @@ module decode(input clk, input clk_en,
   wire fetch_add_store_step = atomic_inflight && atomic_fetch_add_mode && (atomic_step_decode == 2'd2);
   wire [4:0]fetch_add_mem_opcode = (opcode == 5'd16) ? 5'd3 :
                                    (opcode == 5'd17) ? 5'd4 : 5'd5;
-  wire [4:0]fetch_add_base = (opcode == 5'd18) ? 5'd0 : instr_in[16:12];
-  wire [4:0]fetch_add_data = instr_in[21:17];
+  wire [4:0]fetch_add_base = (opcode == 5'd18) ? 5'd0 : instr_dec[16:12];
+  wire [4:0]fetch_add_data = instr_dec[21:17];
   wire [31:0]fetch_add_imm = (opcode == 5'd18) ?
-    { {15{instr_in[16]}}, instr_in[16:0] } :
-    { {20{instr_in[11]}}, instr_in[11:0] };
+    { {15{instr_dec[16]}}, instr_dec[16:0] } :
+    { {20{instr_dec[11]}}, instr_dec[11:0] };
 
   wire [4:0]decode_opcode =
     atomic_inflight ? (atomic_fetch_add_mode ?
@@ -245,19 +340,19 @@ module decode(input clk, input clk_en,
         stall, exc_in_wb, tlb_exc_in_wb,
         tlb_addr, epc, efg, interrupts,
         interrupt_in_wb, rfe_in_wb, rfi_in_wb,
-        kmode, cdv, interrupt_state, pid
+        kmode, cdv, interrupt_state, pid, epc_curr, efg_curr
   );
 
   wire [31:0]base_imm = 
-    (opcode == 5'd1 && is_bitwise) ? { 24'b0, instr_in[7:0] } << alu_shift : // zero extend, then shift
-    (opcode == 5'd1 && is_shift) ? { 27'b0, instr_in[4:0] } : // zero extend 5 bit
-    (opcode == 5'd1 && is_arithmetic) ? { {20{instr_in[11]}}, instr_in[11:0] } : // sign extend 12 bit
-    (opcode == 5'd2) ? {instr_in[21:0], 10'b0} : // shift left 
-    opcode == 5'd12 ? { {10{instr_in[21]}}, instr_in[21:0] } : // sign extend 22 bit
-    is_absolute_mem ? { {20{instr_in[11]}}, instr_in[11:0] } << mem_shift : // sign extend 12 bit with shift
-    (opcode == 5'd4 || opcode == 5'd7 || opcode == 5'd10) ? { {16{instr_in[15]}}, instr_in[15:0] } : // sign extend 16 bit 
-    (opcode == 5'd5 || opcode == 5'd8 || opcode == 5'd11) ? { {11{instr_in[20]}}, instr_in[20:0] } : // sign extend 21 bit 
-    (opcode == 5'd22) ? { {10{instr_in[21]}}, instr_in[21:0] } : // sign extend 22 bit
+    (opcode == 5'd1 && is_bitwise) ? { 24'b0, instr_dec[7:0] } << alu_shift : // zero extend, then shift
+    (opcode == 5'd1 && is_shift) ? { 27'b0, instr_dec[4:0] } : // zero extend 5 bit
+    (opcode == 5'd1 && is_arithmetic) ? { {20{instr_dec[11]}}, instr_dec[11:0] } : // sign extend 12 bit
+    (opcode == 5'd2) ? {instr_dec[21:0], 10'b0} : // shift left 
+    opcode == 5'd12 ? { {10{instr_dec[21]}}, instr_dec[21:0] } : // sign extend 22 bit
+    is_absolute_mem ? { {20{instr_dec[11]}}, instr_dec[11:0] } << mem_shift : // sign extend 12 bit with shift
+    (opcode == 5'd4 || opcode == 5'd7 || opcode == 5'd10) ? { {16{instr_dec[15]}}, instr_dec[15:0] } : // sign extend 16 bit 
+    (opcode == 5'd5 || opcode == 5'd8 || opcode == 5'd11) ? { {11{instr_dec[20]}}, instr_dec[20:0] } : // sign extend 21 bit 
+    (opcode == 5'd22) ? { {10{instr_dec[21]}}, instr_dec[21:0] } : // sign extend 22 bit
     32'd0;
 
   wire [31:0]imm =
@@ -290,6 +385,7 @@ module decode(input clk, input clk_en,
     branch_code_out = 5'd0;
     alu_op_out = 5'd0;
     pc_out = 32'd0;
+    slot_id_out = 32'd0;
     is_load_out = 1'b0;
     is_store_out = 1'b0;
     is_branch_out = 1'b0;
@@ -309,11 +405,13 @@ module decode(input clk, input clk_en,
     atomic_step = 2'd0;
     atomic_instr = 32'd0;
     atomic_pc = 32'd0;
+    atomic_slot_id = 32'd0;
     atomic_drain = 1'b0;
     atomic_drain_instr = 32'd0;
     atomic_drain_pc = 32'd0;
     instr_buf = 32'd0;
     pc_buf = 32'd0;
+    slot_id_buf = 32'd0;
     bubble_buf = 1'b1;
     exc_buf = 8'd0;
     replay_pc_fix_d1 = 1'b0;
@@ -321,6 +419,7 @@ module decode(input clk, input clk_en,
     prev_live_valid = 1'b0;
     prev_live_instr = 32'd0;
     prev_live_pc = 32'd0;
+    prev_live_slot_id = 32'd0;
     is_atomic_out = 1'b0;
     is_fetch_add_atomic_out = 1'b0;
     atomic_step_out = 2'd0;
@@ -352,47 +451,56 @@ module decode(input clk, input clk_en,
             8'h0
             ) : 8'h0;
 
-  wire decode_kill = flush || bubble_decode_in || replay_fix_drop || replay_dup_drop ||
-    live_consecutive_dup || atomic_drain_dup;
+  // Exception priority at decode boundary:
+  // 1) replay-drop clears exceptions (slot is invalid anyway)
+  // 2) interrupt/tlb/priv exceptions keep slot live (bubble=0) for WB trap flow
+  wire decode_has_exc = (interrupt_exc != 8'h0) || (exc_decode_in != 8'h0) || (exc_priv_instr != 8'h0);
+  wire replay_drop = replay_fix_drop || replay_dup_drop || live_consecutive_dup || atomic_drain_dup;
+  wire decode_kill = flush || bubble_decode_in || replay_drop;
+  wire decode_slot_kill = decode_kill || decode_has_exc;
 
   always @(posedge clk) begin
     if (clk_en) begin
       if (~halt) begin
         if (~stall) begin 
-          opcode_out <= decode_kill ? 5'd0 : decode_opcode;
-          s_1_out <= decode_kill ? 5'd0 : s_1;
-          s_2_out <= decode_kill ? 5'd0 : s_2;
-          cr_s_out <= decode_kill ? 5'd0 : r_b;
+          opcode_out <= decode_slot_kill ? 5'd0 : decode_opcode;
+          s_1_out <= decode_slot_kill ? 5'd0 : s_1;
+          s_2_out <= decode_slot_kill ? 5'd0 : s_2;
+          cr_s_out <= decode_slot_kill ? 5'd0 : r_b;
 
-          tgt_out_1 <= (decode_kill || decode_is_store || alias_postinc_load) ? 5'b0 : r_a;
-          tgt_out_2 <= (decode_kill || !decode_is_absolute_mem || increment_type == 2'd0) ? 5'b0 : r_b;
+          tgt_out_1 <= (decode_slot_kill || decode_is_store || alias_postinc_load) ? 5'b0 : r_a;
+          tgt_out_2 <= (decode_slot_kill || !decode_is_absolute_mem || increment_type == 2'd0) ? 5'b0 : r_b;
 
-          imm_out <= decode_kill ? 32'd0 : imm;
-          branch_code_out <= decode_kill ? 5'd0 : branch_code;
-          alu_op_out <= decode_kill ? 5'd0 : decode_alu_op;
-          bubble_out <= (flush || replay_fix_drop || replay_dup_drop ||
-            live_consecutive_dup || atomic_drain_dup) ? 1 : bubble_decode_in;
+          imm_out <= decode_slot_kill ? 32'd0 : imm;
+          branch_code_out <= decode_slot_kill ? 5'd0 : branch_code;
+          alu_op_out <= decode_slot_kill ? 5'd0 : decode_alu_op;
+          // Faulting slots must remain live so writeback can observe exception
+          // metadata and drive redirect/trap behavior.
+          bubble_out <= decode_has_exc ? 1'b0 :
+            (decode_kill ? 1'b1 : bubble_decode_in);
           pc_out <= pc_decode_in;
+          slot_id_out <= slot_id_decode_in;
       
-          is_load_out <= decode_kill ? 1'b0 : decode_is_load;
-          is_store_out <= decode_kill ? 1'b0 : decode_is_store;
-          is_branch_out <= decode_kill ? 1'b0 : decode_is_branch;
-          is_post_inc_out <= decode_kill ? 1'b0 : (decode_is_absolute_mem && increment_type == 2);
-          is_atomic_out <= decode_kill ? 1'b0 : decode_is_atomic;
-          is_fetch_add_atomic_out <= decode_kill ? 1'b0 : decode_is_fetch_add_atomic;
-          atomic_step_out <= decode_kill ? 2'd0 : decode_atomic_step;
-          crmov_mode_type_out <= decode_kill ? 2'd0 : crmov_mode_type;
-          priv_type_out <= decode_kill ? 5'd0 : priv_type;
-          tgts_cr_out <= decode_kill ? 1'b0 : tgts_cr;
+          is_load_out <= decode_slot_kill ? 1'b0 : decode_is_load;
+          is_store_out <= decode_slot_kill ? 1'b0 : decode_is_store;
+          is_branch_out <= decode_slot_kill ? 1'b0 : decode_is_branch;
+          is_post_inc_out <= decode_slot_kill ? 1'b0 : (decode_is_absolute_mem && increment_type == 2);
+          is_atomic_out <= decode_slot_kill ? 1'b0 : decode_is_atomic;
+          is_fetch_add_atomic_out <= decode_slot_kill ? 1'b0 : decode_is_fetch_add_atomic;
+          atomic_step_out <= decode_slot_kill ? 2'd0 : decode_atomic_step;
+          crmov_mode_type_out <= decode_slot_kill ? 2'd0 : crmov_mode_type;
+          priv_type_out <= decode_slot_kill ? 5'd0 : priv_type;
+          tgts_cr_out <= decode_slot_kill ? 1'b0 : tgts_cr;
 
-          tlb_we <= (!decode_kill) &&
+          tlb_we <= (!decode_slot_kill) &&
             (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd1);
-          tlbi   <= (!decode_kill) &&
+          tlbi   <= (!decode_slot_kill) &&
             (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd2);
-          tlbc   <= (!decode_kill) &&
+          tlbc   <= (!decode_slot_kill) &&
             (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd3);
 
           if (flush || bubble_decode_in) begin
+            // Redirects and incoming bubbles cancel any in-flight crack sequence.
             atomic_active <= 1'b0;
             atomic_is_fetch_add <= 1'b0;
             atomic_step <= 2'd0;
@@ -405,6 +513,7 @@ module decode(input clk, input clk_en,
             atomic_step <= 2'd1;
             atomic_instr <= front_instr;
             atomic_pc <= front_pc;
+            atomic_slot_id <= front_slot_id_aligned;
           end else if (atomic_active) begin
             if ((atomic_is_fetch_add && atomic_step == 2'd2) ||
                 (!atomic_is_fetch_add && atomic_step == 2'd1)) begin
@@ -424,7 +533,7 @@ module decode(input clk, input clk_en,
         end
 
         if (~stall) begin
-          exc_out <= (replay_fix_drop || replay_dup_drop || live_consecutive_dup) ? 8'h0 :
+          exc_out <= replay_drop ? 8'h0 :
                     (interrupt_exc != 8'h0) ? interrupt_exc
                     : (exc_decode_in != 0) ? exc_decode_in : exc_priv_instr;
         end
@@ -434,21 +543,19 @@ module decode(input clk, input clk_en,
         // (hold while `was_stall`), and only add decode-stall hold.
         if (!was_stall && !(decode_stall && was_decode_stall)) begin
           instr_buf <= mem_out_0;
-          // On the first cycle stall asserts, instruction memory can already
-          // point at the next word while fetch PC is still one word behind.
-          // In that case, buffer PC+4 so replay keeps the pair aligned.
-          pc_buf <= (stall && prev_live_valid &&
-            (pc_in == prev_live_pc) && (mem_out_0 != prev_live_instr)) ?
-            (pc_in + 32'd4) : pc_in;
+          // Keep buffered instruction and buffered PC from the same cycle.
+          pc_buf <= pc_in;
+          slot_id_buf <= slot_id_in;
           bubble_buf <= bubble_in;
           exc_buf <= exc_in;
         end
-        if (stall || decode_stall || use_buf || flush || bubble_in) begin
+        if (flush || bubble_decode_in) begin
           prev_live_valid <= 1'b0;
-        end else begin
+        end else if (!stall && !decode_stall && !decode_slot_kill) begin
           prev_live_valid <= 1'b1;
-          prev_live_instr <= mem_out_0;
-          prev_live_pc <= pc_in;
+          prev_live_instr <= instr_in;
+          prev_live_pc <= pc_decode_in;
+          prev_live_slot_id <= slot_id_decode_in;
         end
         replay_pc_fix_d1 <= replay_pc_fix;
         replay_pc_fix_d2 <= replay_pc_fix_d1;

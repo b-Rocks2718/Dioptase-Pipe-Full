@@ -1,5 +1,19 @@
 `timescale 1ps/1ps
 
+// Execute stage.
+//
+// Purpose:
+// - Apply GPR/CR forwarding and load-use hazard detection.
+// - Run ALU operations and branch resolution.
+// - Form memory requests (address, byte-lane write mask, store data).
+// - Track replay dedup so stale post-stall copies are converted to bubbles.
+//
+// Contracts:
+// - `stall` means decode must hold its current slot.
+// - `slot_kill` must gate every outward payload field so killed slots do not
+//   forward partial state into older stages.
+// - Atomic cracked micro-ops use buffered operands captured at step 0 so
+//   aliasing cases remain architecturally atomic.
 module execute(input clk, input clk_en, input halt, 
     input bubble_in,
     input [4:0]opcode, input [4:0]s_1, input [4:0]s_2, input [4:0]cr_s,
@@ -19,7 +33,7 @@ module execute(input clk, input clk_en, input halt,
     input [31:0]wb_result_out_1, input [31:0]wb_result_out_2,
     input mem_a_tgts_cr, input mem_b_tgts_cr, input wb_tgts_cr,
     
-    input [31:0]decode_pc_out,
+    input [31:0]decode_pc_out, input [31:0]slot_id,
     input [4:0]mem_a_opcode_out,
     input [4:0]mem_b_opcode_out,
 
@@ -85,6 +99,7 @@ module execute(input clk, input clk_en, input halt,
     replay_dedup_active = 1'b0;
     stall_prev = 1'b0;
     last_opcode_sig = 5'd0;
+    last_slot_id_sig = 32'd0;
     last_s1_sig = 5'd0;
     last_s2_sig = 5'd0;
     last_tgt1_sig = 5'd0;
@@ -121,6 +136,7 @@ module execute(input clk, input clk_en, input halt,
   reg replay_dedup_active;
   reg stall_prev;
   reg [4:0]last_opcode_sig;
+  reg [31:0]last_slot_id_sig;
   reg [4:0]last_s1_sig;
   reg [4:0]last_s2_sig;
   reg [4:0]last_tgt1_sig;
@@ -148,6 +164,8 @@ module execute(input clk, input clk_en, input halt,
   wire is_mem_d = (5'd6 <= opcode && opcode <= 5'd8);
   wire is_mem_b = (5'd9 <= opcode && opcode <= 5'd11);
 
+  // Forwarding priority is newest-to-oldest pipeline producer, then local
+  // stall history buffers, then regfile output.
   assign op1 = 
     (tgt_out_1 == s_1 && s_1 != 5'b0) ? result_1 :
     (tgt_out_2 == s_1 && s_1 != 5'b0) ? result_2 :
@@ -198,44 +216,31 @@ module execute(input clk, input clk_en, input halt,
     (crmov_mode_type == 2'd1 || crmov_mode_type == 2'd2);
   wire [4:0]dep_s1 = crmov_reads_creg ? 5'd0 : s_1;
   wire [4:0]dep_s2 = is_crmov ? 5'd0 : s_2;
+  wire decode_live = !bubble_in && !exc_in_wb && !rfe_in_wb;
+
+  wire ex_dep_hit =
+    (((tgt_out_1 == dep_s1 || tgt_out_1 == dep_s2) && tgt_out_1 != 5'd0) ||
+     ((tgt_out_2 == dep_s1 || tgt_out_2 == dep_s2) && tgt_out_2 != 5'd0));
+  wire tlb_mem_dep_hit =
+    (((tlb_mem_tgt_1 == dep_s1 || tlb_mem_tgt_1 == dep_s2) && tlb_mem_tgt_1 != 5'd0) ||
+     ((tlb_mem_tgt_2 == dep_s1 || tlb_mem_tgt_2 == dep_s2) && tlb_mem_tgt_2 != 5'd0));
+  wire mem_a_dep_hit =
+    (((mem_a_tgt_1 == dep_s1 || mem_a_tgt_1 == dep_s2) && mem_a_tgt_1 != 5'd0) ||
+     ((mem_a_tgt_2 == dep_s1 || mem_a_tgt_2 == dep_s2) && mem_a_tgt_2 != 5'd0));
+  wire mem_b_dep_hit =
+    (((mem_b_tgt_1 == dep_s1 || mem_b_tgt_1 == dep_s2) && mem_b_tgt_1 != 5'd0) ||
+     ((mem_b_tgt_2 == dep_s1 || mem_b_tgt_2 == dep_s2) && mem_b_tgt_2 != 5'd0));
 
   // Load-use stall checks apply only to true GPR dependencies.
   // CR dependencies are handled by dedicated control-register forwarding.
-  assign stall = !exc_in_wb && !rfe_in_wb && (
-   // Dependencies on a load or tlbr must stall until a forwardable value exists.
-   // With the dedicated tlb_memory stage, load data is not available until writeback.
-   ((((tgt_out_1 == dep_s1 ||
-     tgt_out_1 == dep_s2) &&
-     tgt_out_1 != 5'd0) || 
-     ((tgt_out_2 == dep_s1 ||
-     tgt_out_2 == dep_s2) &&
-     tgt_out_2 != 5'd0)) &&
-     (is_load_out || is_tlbr_out) && 
-     !bubble_in && !bubble_out) ||
-  ((((tlb_mem_tgt_1 == dep_s1 ||
-     tlb_mem_tgt_1 == dep_s2) &&
-     tlb_mem_tgt_1 != 5'd0) ||
-     ((tlb_mem_tgt_2 == dep_s1 ||
-     tlb_mem_tgt_2 == dep_s2) &&
-     tlb_mem_tgt_2 != 5'd0)) &&
-     tlb_mem_is_load &&
-     !bubble_in && !tlb_mem_bubble) ||
-  ((((mem_a_tgt_1 == dep_s1 ||
-     mem_a_tgt_1 == dep_s2) &&
-     mem_a_tgt_1 != 5'd0) || 
-     ((mem_a_tgt_2 == dep_s1 ||
-     mem_a_tgt_2 == dep_s2) &&
-     mem_a_tgt_2 != 5'd0)) &&
-     mem_a_load &&
-     !bubble_in && !mem_a_bubble) ||
-  ((((mem_b_tgt_1 == dep_s1 ||
-     mem_b_tgt_1 == dep_s2) &&
-     mem_b_tgt_1 != 5'd0) || 
-     ((mem_b_tgt_2 == dep_s1 ||
-     mem_b_tgt_2 == dep_s2) &&
-     mem_b_tgt_2 != 5'd0)) &&
-     mem_b_load &&
-     !bubble_in && !mem_b_bubble));
+  assign stall = decode_live && (
+    // Dependencies on a load or tlbr must stall until a forwardable value exists.
+    // With the dedicated tlb_memory stage, load data is not available until writeback.
+    (ex_dep_hit && (is_load_out || is_tlbr_out) && !bubble_out) ||
+    (tlb_mem_dep_hit && tlb_mem_is_load && !tlb_mem_bubble) ||
+    (mem_a_dep_hit && mem_a_load && !mem_a_bubble) ||
+    (mem_b_dep_hit && mem_b_load && !mem_b_bubble)
+  );
 
   // Forward CR reads for crmv (rA, crB / crA, crB). This keeps CR RAW
   // dependencies precise without stalling and preserves behavior under
@@ -261,11 +266,13 @@ module execute(input clk, input clk_en, input halt,
     buf_b_cr_hit ? reg_data_buf_b_1 :
     reg_out_cr;
 
-  // Frontend replay can present the same decoded instruction multiple times
-  // after a load stall. Track the first post-stall instruction signature and
-  // bubble repeated copies until decode advances to a different signature.
   wire opening_after_stall = stall_prev && !stall && !bubble_in && !exc_in_wb && !rfe_in_wb;
-  wire same_replay_sig =
+  // Replay dedup:
+  // - enabled only after a stall opens, then cleared once decode advances.
+  // - slot id is the primary identity key; payload fields remain as safety
+  //   backstop in case an upstream bug mislabels slot ids.
+  wire same_replay_slot =
+    (slot_id == last_slot_id_sig) &&
     (opcode == last_opcode_sig) &&
     (s_1 == last_s1_sig) &&
     (s_2 == last_s2_sig) &&
@@ -284,7 +291,7 @@ module execute(input clk, input clk_en, input halt,
     (is_fetch_add_atomic == last_is_fetch_add_atomic_sig) &&
     (atomic_step == last_atomic_step_sig);
   wire exec_dup = replay_dedup_active && !opening_after_stall &&
-    !bubble_in && !stall && !exc_in_wb && !rfe_in_wb && same_replay_sig;
+    !bubble_in && !stall && !exc_in_wb && !rfe_in_wb && same_replay_slot;
 
   // nonsense to make subtract immediate work how i want
   wire [31:0]lhs = (opcode == 5'd1 && alu_op == 5'd16) ? imm : atomic_op1;
@@ -299,6 +306,9 @@ module execute(input clk, input clk_en, input halt,
   ALU ALU(clk, clk_en, opcode, alu_op, lhs, rhs, decode_pc_out, bubble_in, 
     flags_restore, rfe_in_wb,
     alu_rslt, flags);
+
+  // A killed execute slot must not forward partial payload into later stages.
+  wire slot_kill = bubble_in || exc_in_wb || rfe_in_wb || stall || exec_dup || halt;
 
   // Memory effective address used by this execute slot.
   // Keep this as a wire so byte/halfword lane selection uses the current
@@ -377,11 +387,31 @@ always @(posedge clk) begin
       atomic_base_buf <= 32'd0;
       atomic_data_buf <= 32'd0;
       atomic_fadd_sum_buf <= 32'd0;
+      replay_dedup_active <= 1'b0;
+      stall_prev <= 1'b0;
+      last_opcode_sig <= 5'd0;
+      last_slot_id_sig <= 32'd0;
+      last_s1_sig <= 5'd0;
+      last_s2_sig <= 5'd0;
+      last_tgt1_sig <= 5'd0;
+      last_tgt2_sig <= 5'd0;
+      last_alu_op_sig <= 5'd0;
+      last_branch_code_sig <= 5'd0;
+      last_imm_sig <= 32'd0;
+      last_is_load_sig <= 1'b0;
+      last_is_store_sig <= 1'b0;
+      last_is_branch_sig <= 1'b0;
+      last_is_post_inc_sig <= 1'b0;
+      last_priv_type_sig <= 5'd0;
+      last_crmov_mode_sig <= 2'd0;
+      last_is_atomic_sig <= 1'b0;
+      last_is_fetch_add_atomic_sig <= 1'b0;
+      last_atomic_step_sig <= 2'd0;
       stall_hist_1 <= 1'b0;
       stall_hist_2 <= 1'b0;
     end else begin
               // jump and link
-      result_1 <= bubble_in ? 32'd0 :
+      result_1 <= slot_kill ? 32'd0 :
                   (opcode == 5'd13 || opcode == 5'd14) ? decode_pc_out + 32'd4 : 
                   // crmov control-register source
                   (is_crmov && crmov_reads_creg) ? cr_op :
@@ -390,33 +420,32 @@ always @(posedge clk) begin
                   // everything else
                   alu_rslt;
 
-      result_2 <= bubble_in ? 32'd0 : alu_rslt;
-      tgt_out_1 <= (bubble_in || exc_in_wb || rfe_in_wb || stall || exec_dup || fadd_add_step) ? 5'd0 : tgt_1;
-      tgt_out_2 <= (bubble_in || exc_in_wb || rfe_in_wb || stall || exec_dup) ? 5'd0 : tgt_2;
-      opcode_out <= bubble_in ? 5'd0 : opcode;
-      bubble_out <= (exc_in_wb || rfe_in_wb || stall || halt || exec_dup) ? 1 : bubble_in;
+      result_2 <= slot_kill ? 32'd0 : alu_rslt;
+      tgt_out_1 <= (slot_kill || fadd_add_step) ? 5'd0 : tgt_1;
+      tgt_out_2 <= slot_kill ? 5'd0 : tgt_2;
+      opcode_out <= slot_kill ? 5'd0 : opcode;
+      bubble_out <= slot_kill ? 1'b1 : bubble_in;
 
-      addr <= mem_addr;
-      mem_re <= is_load && !bubble_in && !exc_in_wb
-                && !rfe_in_wb && (exc_out == 8'd0) && !stall && !exec_dup;
-      store_data <= bubble_in ? 32'd0 : store_data_next;
-      we <= bubble_in ? 4'd0 : we_next;
+      addr <= slot_kill ? 32'd0 : mem_addr;
+      mem_re <= is_load && !slot_kill && (exc_out == 8'd0);
+      store_data <= slot_kill ? 32'd0 : store_data_next;
+      we <= slot_kill ? 4'd0 : we_next;
 
-      is_load_out <= (bubble_in || exec_dup) ? 1'b0 : is_load;
-      is_store_out <= (bubble_in || exec_dup) ? 1'b0 : is_store;
-      tgts_cr_out <= (bubble_in || exec_dup) ? 1'b0 : tgts_cr;
-      priv_type_out <= (bubble_in || exec_dup) ? 5'd0 : priv_type;
-      crmov_mode_type_out <= (bubble_in || exec_dup) ? 2'd0 : crmov_mode_type;
+      is_load_out <= slot_kill ? 1'b0 : is_load;
+      is_store_out <= slot_kill ? 1'b0 : is_store;
+      tgts_cr_out <= slot_kill ? 1'b0 : tgts_cr;
+      priv_type_out <= slot_kill ? 5'd0 : priv_type;
+      crmov_mode_type_out <= slot_kill ? 2'd0 : crmov_mode_type;
 
-      exc_out <= bubble_in ? 8'h0 : exc_in;
+      exc_out <= slot_kill ? 8'h0 : exc_in;
 
       pc_out <= decode_pc_out;
-      op1_out <= (bubble_in || exec_dup) ? 32'd0 : op1;
-      op2_out <= (bubble_in || exec_dup) ? 32'd0 : op2;
+      op1_out <= slot_kill ? 32'd0 : op1;
+      op2_out <= slot_kill ? 32'd0 : op2;
 
-      flags_out <= (bubble_in || exec_dup) ? 4'd0 : flags;
+      flags_out <= slot_kill ? 4'd0 : flags;
 
-      is_tlbr_out <= !bubble_in && !exec_dup &&
+      is_tlbr_out <= !slot_kill &&
         (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd0);
 
       if (stall) begin
@@ -443,12 +472,13 @@ always @(posedge clk) begin
         replay_dedup_active <= 1'b0;
       end else if (opening_after_stall) begin
         replay_dedup_active <= 1'b1;
-      end else if (replay_dedup_active && !stall && !bubble_in && !same_replay_sig) begin
+      end else if (replay_dedup_active && !stall && !bubble_in && !same_replay_slot) begin
         replay_dedup_active <= 1'b0;
       end
 
-      if (!stall && !bubble_in && !exc_in_wb && !rfe_in_wb) begin
+      if (!stall && !bubble_in && !exc_in_wb && !rfe_in_wb && !exec_dup) begin
         last_opcode_sig <= opcode;
+        last_slot_id_sig <= slot_id;
         last_s1_sig <= s_1;
         last_s2_sig <= s_2;
         last_tgt1_sig <= tgt_1;

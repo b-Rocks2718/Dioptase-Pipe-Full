@@ -99,7 +99,7 @@ $(OUT_DIR)/%.vout: $(HEX_DIR)/%.hex sim.vvp | dirs
 
 # Run Emulator -> .emuout
 $(OUT_DIR)/%.emuout: $(HEX_DIR)/%.hex $(EMULATOR) | dirs
-	$(EMULATOR) $(EMULATOR_ARGS) $< > $@
+	$(EMULATOR) $(EMULATOR_ARGS) $< | sed '/^Warning:/d' > $@
 
 # Main test target
 test: $(ASM_SRCS) $(VERILOG_SRCS) | dirs
@@ -113,7 +113,7 @@ test: $(ASM_SRCS) $(VERILOG_SRCS) | dirs
 	for t in $(basename $(notdir $(EMU_TESTS_SRCS))); do \
 	  printf "%s %-20s " '-' "$$t"; \
 	  $(ASSEMBLER) $(EMU_TESTS_DIR)/$$t.s -o $(HEX_DIR)/$$t.hex -kernel && \
-	  $(EMULATOR) $(EMULATOR_ARGS) $(HEX_DIR)/$$t.hex > $(OUT_DIR)/$$t.emuout && \
+	  $(EMULATOR) $(EMULATOR_ARGS) $(HEX_DIR)/$$t.hex | sed '/^Warning:/d' > $(OUT_DIR)/$$t.emuout && \
 	  $(VVP) sim.vvp +hex=$(HEX_DIR)/$$t.hex +vcd=$(OUT_DIR)/$$t.vcd +cycle_limit=$(CYCLE_LIMIT) 2>/dev/null \
   		| sed '/^VCD info:/d;/\$$finish called/d' > $(OUT_DIR)/$$t.vout ; \
 	  if cmp --silent $(OUT_DIR)/$$t.emuout $(OUT_DIR)/$$t.vout; then \
@@ -127,7 +127,7 @@ test: $(ASM_SRCS) $(VERILOG_SRCS) | dirs
 	for t in $(basename $(notdir $(CPU_TESTS_SRCS))); do \
 	  printf "%s %-20s " '-' "$$t"; \
 	  $(ASSEMBLER) $(CPU_TESTS_DIR)/$$t.s -o $(HEX_DIR)/$$t.hex -kernel && \
-	  $(EMULATOR) $(EMULATOR_ARGS) $(HEX_DIR)/$$t.hex > $(OUT_DIR)/$$t.emuout && \
+	  $(EMULATOR) $(EMULATOR_ARGS) $(HEX_DIR)/$$t.hex | sed '/^Warning:/d' > $(OUT_DIR)/$$t.emuout && \
 	  $(VVP) sim.vvp +hex=$(HEX_DIR)/$$t.hex +vcd=$(OUT_DIR)/$$t.vcd +cycle_limit=$(CYCLE_LIMIT) 2>/dev/null \
 		| sed '/^VCD info:/d;/\$$finish called/d' > $(OUT_DIR)/$$t.vout ; \
 	  if cmp --silent $(OUT_DIR)/$$t.emuout $(OUT_DIR)/$$t.vout; then \
@@ -153,7 +153,7 @@ test-verilator: check-verilator-deps $(ASM_SRCS) $(VERILOG_SRCS) | dirs
 	for t in $(basename $(notdir $(EMU_TESTS_SRCS))); do \
 	  printf "%s %-20s " '-' "$$t"; \
 	  $(ASSEMBLER) $(EMU_TESTS_DIR)/$$t.s -o $(HEX_DIR)/$$t.hex -kernel && \
-	  $(EMULATOR) $(EMULATOR_ARGS) $(HEX_DIR)/$$t.hex > $(OUT_DIR)/$$t.emuout && \
+	  $(EMULATOR) $(EMULATOR_ARGS) $(HEX_DIR)/$$t.hex | sed '/^Warning:/d' > $(OUT_DIR)/$$t.emuout && \
 	  ./obj_dir/dioptase +hex=$(HEX_DIR)/$$t.hex --noinfo --max-cycles=$(CYCLE_LIMIT) 2>/dev/null | head -n 1 > $(OUT_DIR)/$$t.vout ; \
 	  if cmp --silent $(OUT_DIR)/$$t.emuout $(OUT_DIR)/$$t.vout; then \
 	    echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
@@ -166,7 +166,7 @@ test-verilator: check-verilator-deps $(ASM_SRCS) $(VERILOG_SRCS) | dirs
 	for t in $(basename $(notdir $(CPU_TESTS_SRCS))); do \
 	  printf "%s %-20s " '-' "$$t"; \
 	  $(ASSEMBLER) $(CPU_TESTS_DIR)/$$t.s -o $(HEX_DIR)/$$t.hex -kernel && \
-	  $(EMULATOR) $(EMULATOR_ARGS) $(HEX_DIR)/$$t.hex > $(OUT_DIR)/$$t.emuout && \
+	  $(EMULATOR) $(EMULATOR_ARGS) $(HEX_DIR)/$$t.hex | sed '/^Warning:/d' > $(OUT_DIR)/$$t.emuout && \
 	  ./obj_dir/dioptase +hex=$(HEX_DIR)/$$t.hex --noinfo --max-cycles=$(CYCLE_LIMIT) 2>/dev/null | head -n 1 > $(OUT_DIR)/$$t.vout ; \
 	  if cmp --silent $(OUT_DIR)/$$t.emuout $(OUT_DIR)/$$t.vout; then \
 	    echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \

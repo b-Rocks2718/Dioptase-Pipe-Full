@@ -1,5 +1,13 @@
 `timescale 1ps/1ps
 
+// Integer register file.
+//
+// Interface:
+// - Two synchronous read ports.
+// - Two write ports (port1 is used for post-increment style address updates).
+//
+// Invariant:
+// - Reads of r0 always return zero regardless of stored array contents.
 module regfile(input clk, input clk_en,
     input [4:0]raddr0, output reg [31:0]rdata0,
     input [4:0]raddr1, output reg [31:0]rdata1,
@@ -22,12 +30,22 @@ module regfile(input clk, input clk_en,
   always @(posedge clk) begin
     if (wen0) begin
         regfile[waddr0] <= wdata0;
+`ifdef SIMULATION
+        if ($test$plusargs("reg_debug")) begin
+          $display("[reg] w0 r%0d=%h", waddr0, wdata0);
+        end
+`endif
     end
     if (wen1) begin
         // 2nd write port is used for pre/post increment memory operations.
         // If both write ports target the same register in one cycle, keep
         // the address update so post-increment remains architecturally visible.
         regfile[waddr1] <= wdata1;
+`ifdef SIMULATION
+        if ($test$plusargs("reg_debug")) begin
+          $display("[reg] w1 r%0d=%h", waddr1, wdata1);
+        end
+`endif
     end
 
     if (!stall) begin
@@ -46,9 +64,11 @@ module cregfile(input clk, input clk_en,
     input [31:0]epc, input [31:0]efg, input [15:0]interrupts,
     input interrupt_in_wb, input rfe_in_wb, input rfi_in_wb,
     output kmode, output [31:0]cdv_out, output [31:0]interrupt_state,
-    output [31:0]pid
+    output [31:0]pid, output [31:0]epc_out, output [31:0]efg_out
     );
 
+  // Control register file layout (index):
+  // 0=psr(level), 1=pid, 2=isr, 3=imr, 4=epc, 5=efg, 6=cdv, 7=tlb_fault_addr
   reg [31:0]cregfile[0:5'b111];
 
   initial begin
@@ -64,8 +84,11 @@ module cregfile(input clk, input clk_en,
 
   assign cdv_out = cregfile[6];
   assign pid = cregfile[1];
+  assign epc_out = cregfile[4];
+  assign efg_out = cregfile[5];
   assign kmode = (cregfile[0] != 32'd0);
 
+  // Interrupt delivery is gated by IMR enable bit at bit31.
   assign interrupt_state = cregfile[3][31] ?
     (cregfile[2] & cregfile[3]) : 32'd0;
 
@@ -82,6 +105,7 @@ module cregfile(input clk, input clk_en,
       if (!exc_in_wb && !rfe_in_wb) begin
         rdata0 <= (raddr0 == 0) ? 32'b0 : cregfile[raddr0[2:0]];
       end else if (exc_in_wb) begin
+        // Exception entry snapshots EPC/EFG and increments privilege nesting.
         if (tlb_exc_in_wb) begin
           cregfile[7] <= tlb_addr;
         end
@@ -95,6 +119,7 @@ module cregfile(input clk, input clk_en,
         // increment state
         cregfile[0] <= cregfile[0] + 32'h1;
       end else if (rfe_in_wb) begin
+        // Return-from-exception decrements privilege nesting.
         if (rfi_in_wb) begin
           // re-enable interrupts
           cregfile[3] <= cregfile[3] | 32'h80000000;

@@ -1,5 +1,12 @@
 `timescale 1ps/1ps
 
+// Fully-associative 8-entry TLB used by the full pipeline.
+//
+// Behavior summary:
+// - `addr0` is instruction-side translation/permission check.
+// - `addr1` is data-side translation/permission check (read or write).
+// - `read_addr` is lookup key for tlbr/tlbw/tlbi control operations.
+// - Permission faults return ISA exception 0x82/0x83 depending on mode.
 module tlb(
   input clk, input clk_en,
   input kmode, input [31:0]pid,
@@ -106,6 +113,7 @@ module tlb(
   wire [7:0]exc0_next = fetch_fault ? (kmode ? 8'h83 : 8'h82) : 8'd0;
   wire [7:0]exc1_next = (exc_in != 8'd0) ? exc_in :
     (data_fault ? (kmode ? 8'h83 : 8'h82) : 8'd0);
+  wire is_exc = (exc_out1 != 8'd0);
 
   // Physical memory bus is 18-bit in this FPGA pipeline implementation.
   // ISA TLB value keeps full 15-bit PPN; low 6 bits are used by this memory bus.
@@ -148,6 +156,21 @@ module tlb(
 
   always @(posedge clk) begin
     if (clk_en) begin
+`ifdef SIMULATION
+      if ($test$plusargs("tlb_debug")) begin
+        if (we) begin
+          $display("[tlb] write pid=%h vpn=%h val=%h idx=%0d repl=%b", pid, vpn_read, write_data[26:0], write_idx, !write_match_found);
+        end
+        if (invalidate) begin
+          $display("[tlb] invalidate pid=%h vpn=%h", pid, vpn_read);
+        end
+        if (exc0_next != 8'd0 || exc1_next != 8'd0) begin
+          $display("[tlb] fault exc0=%h exc1=%h kmode=%b pid=%h addr0=%h addr1=%h hit0=%b hit1=%b val0=%h val1=%h read_req=%b write_req=%b",
+            exc0_next, exc1_next, kmode, pid, addr0, addr1, match0_hit, match1_hit, match0_value, match1_value,
+            addr1_read_req, addr1_write_req);
+        end
+      end
+`endif
       if (clear) begin
         for (i = 0; i < 8; i = i + 1) begin
           cache_valid[i] <= 1'b0;
@@ -176,7 +199,7 @@ module tlb(
       exc_out0 <= exc0_next;
       exc_out1 <= exc1_next;
       addr0_out <= addr0_phys_next;
-      addr1_out <= (exc1_next != 8'd0) ? {8'b0, exc1_next, 2'b0} : addr1_phys_next;
+      addr1_out <= is_exc ? {8'b0, exc_out1, 2'b0} : addr1_phys_next;
       read_addr_out <= read_hit ? read_value : 27'd0;
     end
   end

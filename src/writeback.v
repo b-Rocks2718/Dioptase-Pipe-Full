@@ -1,5 +1,15 @@
 `timescale 1ps/1ps
 
+// Writeback stage.
+//
+// Purpose:
+// - Select final GPR write values (ALU vs load result).
+// - Apply byte/halfword lane extraction for subword loads.
+// - Emit architectural control events (exception, rfe/rfi, halt, sleep).
+//
+// Invariants:
+// - Exception slots suppress normal register writes.
+// - Control events are only asserted for live (non-bubble) slots.
 module writeback(input clk, input clk_en, input halt, input bubble_in, 
     input [4:0]tgt_in_1, input [4:0]tgt_in_2, 
     input is_load, input is_store,
@@ -53,6 +63,7 @@ module writeback(input clk, input clk_en, input halt, input bubble_in,
     end
   end
 
+  // Load lane extraction follows effective address byte offset.
   wire [31:0]masked_mem_result = 
     (5'd3 <= opcode && opcode <= 5'd5) ? mem_result :
     (5'd6 <= opcode && opcode <= 5'd8 && !addr[1] && !addr[0]) ? mem_result & 32'hffff :
@@ -64,7 +75,7 @@ module writeback(input clk, input clk_en, input halt, input bubble_in,
     (5'd9 <= opcode && opcode <= 5'd11 && addr[0] && addr[1]) ? (mem_result & 32'hff000000) >> 24 :
     32'h0;
 
-  // stores and immediate branches don't write to register file, everything else does
+  // Stores and immediate branches do not write GPR results.
   assign we1 = (tgt_in_1 != 0) && (!is_store && opcode != 5'd12) && !bubble_in && !tgts_cr && !exc_in_wb;
   assign we2 = (tgt_in_2 != 0) && (opcode != 5'd12) && !bubble_in && !exc_in_wb;
   
