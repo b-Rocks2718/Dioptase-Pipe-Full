@@ -31,7 +31,8 @@ module execute(input clk, input clk_en, input halt,
     input [31:0]mem_a_result_out_1, input [31:0]mem_a_result_out_2,
     input [31:0]mem_b_result_out_1, input [31:0]mem_b_result_out_2,
     input [31:0]wb_result_out_1, input [31:0]wb_result_out_2,
-    input mem_a_tgts_cr, input mem_b_tgts_cr, input wb_tgts_cr,
+    input tlb_mem_tgts_cr, input mem_a_tgts_cr, input mem_b_tgts_cr, input wb_tgts_cr,
+    input tlb_mem_no_alias_1, input mem_a_no_alias_1, input mem_b_no_alias_1, input wb_no_alias_1,
     
     input [31:0]decode_pc_out, input [31:0]slot_id,
 
@@ -42,6 +43,7 @@ module execute(input clk, input clk_en, input halt,
     input is_post_inc, input tgts_cr,
     input [4:0]priv_type, input [1:0]crmov_mode_type,
     input [7:0]exc_in, input exc_in_wb, input [31:0]flags_restore, input rfe_in_wb,
+    input kmode,
     input is_atomic, input is_fetch_add_atomic, input [1:0]atomic_step,
 
     output reg [31:0]result_1, output reg [31:0]result_2,
@@ -72,6 +74,8 @@ module execute(input clk, input clk_en, input halt,
     reg_tgt_buf_b_2 = 5'd0;
     tgts_cr_buf_a = 0;
     tgts_cr_buf_b = 0;
+    no_alias_buf_a_1 = 0;
+    no_alias_buf_b_1 = 0;
     reg_data_buf_a_1 = 32'd0;
     reg_data_buf_a_2 = 32'd0;
     reg_data_buf_b_1 = 32'd0;
@@ -114,6 +118,8 @@ module execute(input clk, input clk_en, input halt,
   reg [31:0]reg_data_buf_b_2;
   reg tgts_cr_buf_a;
   reg tgts_cr_buf_b;
+  reg no_alias_buf_a_1;
+  reg no_alias_buf_b_1;
   reg replay_dedup_active;
   reg stall_prev;
   // Packed signature for duplicate filtering across stall-release windows. This
@@ -135,37 +141,65 @@ module execute(input clk, input clk_en, input halt,
   wire is_mem_b = (5'd9 <= opcode && opcode <= 5'd11);
   wire s1_nonzero = (s_1 != 5'd0);
   wire s2_nonzero = (s_2 != 5'd0);
+  wire is_crmov = (opcode == 5'd31) && (priv_type == 5'd1);
+  wire source_no_alias_s1 = kmode && is_crmov && (s_1 == 5'd31);
+  wire source_no_alias_s2 = kmode && is_crmov && (s_2 == 5'd31);
+  wire ex1_no_alias = kmode && !tgts_cr_out &&
+    (opcode_out == 5'd31) && (priv_type_out == 5'd1) &&
+    ((crmov_mode_type_out == 2'd1) || (crmov_mode_type_out == 2'd3)) &&
+    (tgt_out_1 == 5'd31);
+  wire ex1_gpr_valid = !tgts_cr_out;
+  wire tlbm1_gpr_valid = !tlb_mem_tgts_cr;
+  wire mema1_gpr_valid = !mem_a_tgts_cr;
+  wire memb1_gpr_valid = !mem_b_tgts_cr;
+  wire wb1_gpr_valid = !wb_tgts_cr;
+  wire buf_a1_gpr_valid = !tgts_cr_buf_a;
+  wire buf_b1_gpr_valid = !tgts_cr_buf_b;
 
   // Forwarding priority is newest-to-oldest pipeline producer, then local
   // stall history buffers, then regfile output.
-  wire ex1_hit_s1 = s1_nonzero && (tgt_out_1 == s_1);
+  wire ex1_hit_s1 = s1_nonzero && ex1_gpr_valid && (tgt_out_1 == s_1) &&
+    ((s_1 != 5'd31) || (source_no_alias_s1 == ex1_no_alias));
   wire ex2_hit_s1 = s1_nonzero && (tgt_out_2 == s_1);
-  wire tlbm1_hit_s1 = s1_nonzero && (tlb_mem_tgt_1 == s_1);
+  wire tlbm1_hit_s1 = s1_nonzero && tlbm1_gpr_valid && (tlb_mem_tgt_1 == s_1) &&
+    ((s_1 != 5'd31) || (source_no_alias_s1 == tlb_mem_no_alias_1));
   wire tlbm2_hit_s1 = s1_nonzero && (tlb_mem_tgt_2 == s_1);
-  wire mema1_hit_s1 = s1_nonzero && (mem_a_tgt_1 == s_1);
+  wire mema1_hit_s1 = s1_nonzero && mema1_gpr_valid && (mem_a_tgt_1 == s_1) &&
+    ((s_1 != 5'd31) || (source_no_alias_s1 == mem_a_no_alias_1));
   wire mema2_hit_s1 = s1_nonzero && (mem_a_tgt_2 == s_1);
-  wire memb1_hit_s1 = s1_nonzero && (mem_b_tgt_1 == s_1);
+  wire memb1_hit_s1 = s1_nonzero && memb1_gpr_valid && (mem_b_tgt_1 == s_1) &&
+    ((s_1 != 5'd31) || (source_no_alias_s1 == mem_b_no_alias_1));
   wire memb2_hit_s1 = s1_nonzero && (mem_b_tgt_2 == s_1);
-  wire wb1_hit_s1 = s1_nonzero && (wb_tgt_1 == s_1);
+  wire wb1_hit_s1 = s1_nonzero && wb1_gpr_valid && (wb_tgt_1 == s_1) &&
+    ((s_1 != 5'd31) || (source_no_alias_s1 == wb_no_alias_1));
   wire wb2_hit_s1 = s1_nonzero && (wb_tgt_2 == s_1);
-  wire buf_a1_hit_s1 = stall_buf_valid && s1_nonzero && (reg_tgt_buf_a_1 == s_1);
+  wire buf_a1_hit_s1 = stall_buf_valid && s1_nonzero && buf_a1_gpr_valid && (reg_tgt_buf_a_1 == s_1) &&
+    ((s_1 != 5'd31) || (source_no_alias_s1 == no_alias_buf_a_1));
   wire buf_a2_hit_s1 = stall_buf_valid && s1_nonzero && (reg_tgt_buf_a_2 == s_1);
-  wire buf_b1_hit_s1 = stall_buf_valid && s1_nonzero && (reg_tgt_buf_b_1 == s_1);
+  wire buf_b1_hit_s1 = stall_buf_valid && s1_nonzero && buf_b1_gpr_valid && (reg_tgt_buf_b_1 == s_1) &&
+    ((s_1 != 5'd31) || (source_no_alias_s1 == no_alias_buf_b_1));
   wire buf_b2_hit_s1 = stall_buf_valid && s1_nonzero && (reg_tgt_buf_b_2 == s_1);
 
-  wire ex1_hit_s2 = s2_nonzero && (tgt_out_1 == s_2);
+  wire ex1_hit_s2 = s2_nonzero && ex1_gpr_valid && (tgt_out_1 == s_2) &&
+    ((s_2 != 5'd31) || (source_no_alias_s2 == ex1_no_alias));
   wire ex2_hit_s2 = s2_nonzero && (tgt_out_2 == s_2);
-  wire tlbm1_hit_s2 = s2_nonzero && (tlb_mem_tgt_1 == s_2);
+  wire tlbm1_hit_s2 = s2_nonzero && tlbm1_gpr_valid && (tlb_mem_tgt_1 == s_2) &&
+    ((s_2 != 5'd31) || (source_no_alias_s2 == tlb_mem_no_alias_1));
   wire tlbm2_hit_s2 = s2_nonzero && (tlb_mem_tgt_2 == s_2);
-  wire mema1_hit_s2 = s2_nonzero && (mem_a_tgt_1 == s_2);
+  wire mema1_hit_s2 = s2_nonzero && mema1_gpr_valid && (mem_a_tgt_1 == s_2) &&
+    ((s_2 != 5'd31) || (source_no_alias_s2 == mem_a_no_alias_1));
   wire mema2_hit_s2 = s2_nonzero && (mem_a_tgt_2 == s_2);
-  wire memb1_hit_s2 = s2_nonzero && (mem_b_tgt_1 == s_2);
+  wire memb1_hit_s2 = s2_nonzero && memb1_gpr_valid && (mem_b_tgt_1 == s_2) &&
+    ((s_2 != 5'd31) || (source_no_alias_s2 == mem_b_no_alias_1));
   wire memb2_hit_s2 = s2_nonzero && (mem_b_tgt_2 == s_2);
-  wire wb1_hit_s2 = s2_nonzero && (wb_tgt_1 == s_2);
+  wire wb1_hit_s2 = s2_nonzero && wb1_gpr_valid && (wb_tgt_1 == s_2) &&
+    ((s_2 != 5'd31) || (source_no_alias_s2 == wb_no_alias_1));
   wire wb2_hit_s2 = s2_nonzero && (wb_tgt_2 == s_2);
-  wire buf_a1_hit_s2 = stall_buf_valid && s2_nonzero && (reg_tgt_buf_a_1 == s_2);
+  wire buf_a1_hit_s2 = stall_buf_valid && s2_nonzero && buf_a1_gpr_valid && (reg_tgt_buf_a_1 == s_2) &&
+    ((s_2 != 5'd31) || (source_no_alias_s2 == no_alias_buf_a_1));
   wire buf_a2_hit_s2 = stall_buf_valid && s2_nonzero && (reg_tgt_buf_a_2 == s_2);
-  wire buf_b1_hit_s2 = stall_buf_valid && s2_nonzero && (reg_tgt_buf_b_1 == s_2);
+  wire buf_b1_hit_s2 = stall_buf_valid && s2_nonzero && buf_b1_gpr_valid && (reg_tgt_buf_b_1 == s_2) &&
+    ((s_2 != 5'd31) || (source_no_alias_s2 == no_alias_buf_b_1));
   wire buf_b2_hit_s2 = stall_buf_valid && s2_nonzero && (reg_tgt_buf_b_2 == s_2);
 
   assign op1 = 
@@ -213,26 +247,33 @@ module execute(input clk, input clk_en, input halt,
     op2;
   wire fadd_add_step = is_atomic && is_fetch_add_atomic && (atomic_step == 2'd1);
   wire fadd_store_step = is_atomic && is_fetch_add_atomic && is_store;
-  wire is_crmov = (opcode == 5'd31) && (priv_type == 5'd1);
   wire crmov_reads_creg = is_crmov &&
     (crmov_mode_type == 2'd1 || crmov_mode_type == 2'd2);
   wire [4:0]dep_s1 = crmov_reads_creg ? 5'd0 : s_1;
   wire [4:0]dep_s2 = is_crmov ? 5'd0 : s_2;
   wire decode_live = !bubble_in && !exc_in_wb && !rfe_in_wb;
 
-  wire ex1_dep_hit = (tgt_out_1 != 5'd0) &&
+  wire ex1_dep_hit = ex1_gpr_valid && (tgt_out_1 != 5'd0) &&
+    ((tgt_out_1 != 5'd31) || (source_no_alias_s1 == ex1_no_alias) ||
+      (source_no_alias_s2 == ex1_no_alias)) &&
     ((tgt_out_1 == dep_s1) || (tgt_out_1 == dep_s2));
   wire ex2_dep_hit = (tgt_out_2 != 5'd0) &&
     ((tgt_out_2 == dep_s1) || (tgt_out_2 == dep_s2));
-  wire tlbm1_dep_hit = (tlb_mem_tgt_1 != 5'd0) &&
+  wire tlbm1_dep_hit = tlbm1_gpr_valid && (tlb_mem_tgt_1 != 5'd0) &&
+    ((tlb_mem_tgt_1 != 5'd31) || (source_no_alias_s1 == tlb_mem_no_alias_1) ||
+      (source_no_alias_s2 == tlb_mem_no_alias_1)) &&
     ((tlb_mem_tgt_1 == dep_s1) || (tlb_mem_tgt_1 == dep_s2));
   wire tlbm2_dep_hit = (tlb_mem_tgt_2 != 5'd0) &&
     ((tlb_mem_tgt_2 == dep_s1) || (tlb_mem_tgt_2 == dep_s2));
-  wire mema1_dep_hit = (mem_a_tgt_1 != 5'd0) &&
+  wire mema1_dep_hit = mema1_gpr_valid && (mem_a_tgt_1 != 5'd0) &&
+    ((mem_a_tgt_1 != 5'd31) || (source_no_alias_s1 == mem_a_no_alias_1) ||
+      (source_no_alias_s2 == mem_a_no_alias_1)) &&
     ((mem_a_tgt_1 == dep_s1) || (mem_a_tgt_1 == dep_s2));
   wire mema2_dep_hit = (mem_a_tgt_2 != 5'd0) &&
     ((mem_a_tgt_2 == dep_s1) || (mem_a_tgt_2 == dep_s2));
-  wire memb1_dep_hit = (mem_b_tgt_1 != 5'd0) &&
+  wire memb1_dep_hit = memb1_gpr_valid && (mem_b_tgt_1 != 5'd0) &&
+    ((mem_b_tgt_1 != 5'd31) || (source_no_alias_s1 == mem_b_no_alias_1) ||
+      (source_no_alias_s2 == mem_b_no_alias_1)) &&
     ((mem_b_tgt_1 == dep_s1) || (mem_b_tgt_1 == dep_s2));
   wire memb2_dep_hit = (mem_b_tgt_2 != 5'd0) &&
     ((mem_b_tgt_2 == dep_s1) || (mem_b_tgt_2 == dep_s2));
@@ -257,6 +298,8 @@ module execute(input clk, input clk_en, input halt,
   // prolonged execute stalls via WB-captured buffers.
   wire ex_cr_hit = crmov_reads_creg && (cr_s != 5'd0) &&
     tgts_cr_out && (tgt_out_1 == cr_s);
+  wire tlb_mem_cr_hit = crmov_reads_creg && (cr_s != 5'd0) &&
+    tlb_mem_tgts_cr && (tlb_mem_tgt_1 == cr_s);
   wire mem_a_cr_hit = crmov_reads_creg && (cr_s != 5'd0) &&
     mem_a_tgts_cr && (mem_a_tgt_1 == cr_s);
   wire mem_b_cr_hit = crmov_reads_creg && (cr_s != 5'd0) &&
@@ -269,6 +312,7 @@ module execute(input clk, input clk_en, input halt,
     tgts_cr_buf_b && (reg_tgt_buf_b_1 == cr_s);
   wire [31:0]cr_op =
     ex_cr_hit ? result_1 :
+    tlb_mem_cr_hit ? tlb_mem_result_out_1 :
     mem_a_cr_hit ? mem_a_result_out_1 :
     mem_b_cr_hit ? mem_b_result_out_1 :
     wb_cr_hit ? wb_result_out_1 :
@@ -388,11 +432,13 @@ always @(posedge clk) begin
       reg_data_buf_a_1 <= 32'd0;
       reg_data_buf_a_2 <= 32'd0;
       tgts_cr_buf_a <= 1'b0;
+      no_alias_buf_a_1 <= 1'b0;
       reg_tgt_buf_b_1 <= 5'd0;
       reg_tgt_buf_b_2 <= 5'd0;
       reg_data_buf_b_1 <= 32'd0;
       reg_data_buf_b_2 <= 32'd0;
       tgts_cr_buf_b <= 1'b0;
+      no_alias_buf_b_1 <= 1'b0;
       atomic_base_buf <= 32'd0;
       atomic_data_buf <= 32'd0;
       atomic_fadd_sum_buf <= 32'd0;
@@ -446,11 +492,13 @@ always @(posedge clk) begin
         reg_data_buf_a_1 <= wb_result_out_1;
         reg_data_buf_a_2 <= wb_result_out_2;
         tgts_cr_buf_a <= wb_tgts_cr;
+        no_alias_buf_a_1 <= wb_no_alias_1;
         reg_tgt_buf_b_1 <= reg_tgt_buf_a_1;
         reg_tgt_buf_b_2 <= reg_tgt_buf_a_2;
         reg_data_buf_b_1 <= reg_data_buf_a_1;
         reg_data_buf_b_2 <= reg_data_buf_a_2;
         tgts_cr_buf_b <= tgts_cr_buf_a;
+        no_alias_buf_b_1 <= no_alias_buf_a_1;
       end
       if (!stall && !bubble_in && !exc_in_wb && !rfe_in_wb &&
           is_atomic && (atomic_step == 2'd0)) begin

@@ -805,8 +805,10 @@ public:
         : keyboard_route_(keyboard_via_uart ? KeyboardRoute::Uart : KeyboardRoute::Ps2),
           keyboard_(guard_, ps2_, uart_input_, keyboard_route_),
           pit_debug_(std::getenv("PIT_DEBUG") != nullptr),
+          vblank_debug_(std::getenv("VBLANK_DEBUG") != nullptr),
           uart_debug_(std::getenv("UART_DEBUG") != nullptr),
-          ps2_debug_(std::getenv("PS2_DEBUG") != nullptr) {
+          ps2_debug_(std::getenv("PS2_DEBUG") != nullptr),
+          cdiv_debug_(std::getenv("CDIV_DEBUG") != nullptr) {
         const char *boot = std::getenv("UART_BOOT");
         if (boot != nullptr) {
             while (*boot != '\0') {
@@ -933,16 +935,93 @@ public:
             const bool pit_irq = top.rootp->dioptase__DOT__mem__DOT__pit_interrupt;
             if (pit_irq && !pit_irq_prev_) {
                 const uint32_t color = top.rootp->dioptase__DOT__mem__DOT__ram[355];
+                const uint32_t ivt_f0 = top.rootp->dioptase__DOT__mem__DOT__ram[240];
+                const uint32_t tile00 = top.rootp->dioptase__DOT__mem__DOT__tile_map[0];
                 const uint32_t tile0 = top.rootp->dioptase__DOT__mem__DOT__tile_map[32];
                 const uint32_t tile1 = top.rootp->dioptase__DOT__mem__DOT__tile_map[33];
+                const uint32_t isr = top.rootp->dioptase__DOT__cpu__DOT__interrupt_state;
+                const uint32_t raw_isr = top.rootp->dioptase__DOT__cpu__DOT__decode__DOT__cregfile__DOT__cregfile[2];
+                const uint32_t imr = top.rootp->dioptase__DOT__cpu__DOT__decode__DOT__cregfile__DOT__cregfile[3];
+                const uint32_t r8 = top.rootp->dioptase__DOT__cpu__DOT__decode__DOT__regfile__DOT__regfile[8];
+                const uint32_t pc = top.rootp->dioptase__DOT__cpu__DOT__decode_pc_out;
+                const uint32_t last_waddr = top.rootp->dioptase__DOT__mem__DOT__waddr_buf;
+                const uint8_t last_wen = static_cast<uint8_t>(top.rootp->dioptase__DOT__mem__DOT__wen_buf);
+                const bool sleep = top.rootp->dioptase__DOT__cpu__DOT__sleep;
+                const bool in_wb_irq = top.rootp->dioptase__DOT__cpu__DOT__interrupt_in_wb;
                 std::cerr << "[pit] interrupt at cycle " << total_cycles_
                           << ", color=0x" << std::hex << std::setw(8)
                           << std::setfill('0') << color
+                          << " ivt_f0=0x" << std::setw(8) << ivt_f0
+                          << " tile[0]=0x" << std::setw(8) << tile00
                           << " tile[32]=0x" << std::setw(8) << tile0
                           << " tile[33]=0x" << std::setw(8) << tile1
+                          << " isr=0x" << std::setw(8) << isr
+                          << " raw_isr=0x" << std::setw(8) << raw_isr
+                          << " imr=0x" << std::setw(8) << imr
+                          << " r8=0x" << std::setw(8) << r8
+                          << " waddr=0x" << std::setw(8) << last_waddr
+                          << " wen=0x" << std::setw(2) << static_cast<unsigned>(last_wen)
+                          << " pc=0x" << std::setw(8) << pc
+                          << " sleep=" << std::dec << sleep
+                          << " wb_irq=" << in_wb_irq
                           << std::dec << std::setfill(' ') << std::endl;
             }
             pit_irq_prev_ = pit_irq;
+        }
+        if (vblank_debug_) {
+            const bool vblank_irq = top.rootp->dioptase__DOT__mem__DOT__vga_vblank_irq;
+            if (vblank_irq && !vblank_irq_prev_) {
+                const uint32_t frame = top.rootp->dioptase__DOT__mem__DOT__vga_frame_count;
+                const uint32_t r2 = top.rootp->dioptase__DOT__cpu__DOT__decode__DOT__regfile__DOT__regfile[2];
+                std::cerr << "[vblank] irq at cycle " << total_cycles_
+                          << " frame=" << frame
+                          << " r2=0x" << std::hex << std::setw(8) << std::setfill('0') << r2
+                          << std::dec << std::setfill(' ') << std::endl;
+            }
+            if (top.rootp->dioptase__DOT__uart_tx_en) {
+                const uint8_t byte = static_cast<uint8_t>(top.rootp->dioptase__DOT__uart_tx_data);
+                const uint32_t r2 = top.rootp->dioptase__DOT__cpu__DOT__decode__DOT__regfile__DOT__regfile[2];
+                std::cerr << "[vblank] uart tx cycle=" << total_cycles_
+                          << " byte=0x" << std::hex << std::setw(2) << std::setfill('0')
+                          << static_cast<int>(byte)
+                          << " r2=0x" << std::setw(8) << r2
+                          << std::dec << std::setfill(' ') << std::endl;
+            }
+            vblank_irq_prev_ = vblank_irq;
+        }
+        if (cdiv_debug_) {
+            const uint32_t pc = top.rootp->dioptase__DOT__cpu__DOT__decode_pc_out;
+            const bool watch_pc = (pc >= 0x00000520u && pc <= 0x00000560u) || (pc < 0x00000100u);
+            if (watch_pc) {
+                const uint8_t d_op = static_cast<uint8_t>(top.rootp->dioptase__DOT__cpu__DOT__decode_opcode_out);
+                const uint8_t e_op = static_cast<uint8_t>(top.rootp->dioptase__DOT__cpu__DOT__exec_opcode_out);
+                const uint8_t mb_exc = static_cast<uint8_t>(top.rootp->dioptase__DOT__cpu__DOT__mem_b_exc_out);
+                const bool wb_irq = top.rootp->dioptase__DOT__cpu__DOT__interrupt_in_wb;
+                const uint32_t isr = top.rootp->dioptase__DOT__cpu__DOT__decode__DOT__cregfile__DOT__cregfile[2];
+                const uint32_t imr = top.rootp->dioptase__DOT__cpu__DOT__decode__DOT__cregfile__DOT__cregfile[3];
+                const uint32_t r8 = top.rootp->dioptase__DOT__cpu__DOT__decode__DOT__regfile__DOT__regfile[8];
+                const uint32_t r10 = top.rootp->dioptase__DOT__cpu__DOT__decode__DOT__regfile__DOT__regfile[10];
+                const uint32_t waddr = top.rootp->dioptase__DOT__mem__DOT__waddr_buf;
+                const uint8_t wen = static_cast<uint8_t>(top.rootp->dioptase__DOT__mem__DOT__wen_buf);
+                const uint32_t mr1 = top.rootp->dioptase__DOT__mem__DOT__raddr1_buf;
+                const uint32_t md1 = top.rootp->dioptase__DOT__mem_read1_data;
+                std::cerr << "[cdiv] cyc=" << total_cycles_
+                          << " pc=0x" << std::hex << std::setw(8) << std::setfill('0') << pc
+                          << " d_op=" << std::setw(2) << static_cast<unsigned>(d_op)
+                          << " e_op=" << std::setw(2) << static_cast<unsigned>(e_op)
+                          << " mb_exc=0x" << std::setw(2) << static_cast<unsigned>(mb_exc)
+                          << " clk_en=" << std::dec << static_cast<unsigned>(top.rootp->dioptase__DOT__clk_en)
+                          << " wb_irq=" << wb_irq
+                          << " isr=0x" << std::hex << std::setw(8) << isr
+                          << " imr=0x" << std::setw(8) << imr
+                          << " r8=0x" << std::setw(8) << r8
+                          << " r10=0x" << std::setw(8) << r10
+                          << " waddr=0x" << std::setw(8) << waddr
+                          << " wen=0x" << std::setw(2) << static_cast<unsigned>(wen)
+                          << " mr1=0x" << std::setw(8) << mr1
+                          << " md1=0x" << std::setw(8) << md1
+                          << std::dec << std::setfill(' ') << std::endl;
+            }
         }
         ++total_cycles_;
         ps2_.tick(top);
@@ -962,11 +1041,14 @@ private:
     SdCardSpiDevice sd_card_;
     bool pit_debug_ = false;
     bool pit_irq_prev_ = false;
+    bool vblank_debug_ = false;
+    bool vblank_irq_prev_ = false;
     uint64_t total_cycles_ = 0;
     std::vector<uint8_t> initial_uart_bytes_;
     std::vector<uint8_t> initial_ps2_scancodes_;
     bool uart_debug_ = false;
     bool ps2_debug_ = false;
+    bool cdiv_debug_ = false;
     uint8_t prev_rx_count_ = 0;
     uint8_t prev_tx_count_ = 0;
     uint32_t prev_r5_ = 0;

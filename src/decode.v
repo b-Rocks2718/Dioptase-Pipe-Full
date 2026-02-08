@@ -118,16 +118,11 @@ module decode(input clk, input clk_en,
   // appears on consecutive cycles, execute it once then bubble repeats.
   wire replay_consecutive_drop = !atomic_active && !stall && !use_buf && !bubble_in &&
     prev_live_valid && (pc_in == prev_live_pc) && (mem_out_0 == prev_live_instr);
-  wire replay_slot_alias_window = use_buf || was_stall || replay_realign_cycle ||
-    replay_realign_d1 || replay_realign_d2 || replay_followup_match;
-  // Keep stale duplicate copies attached to the prior live slot id so execute can
-  // deduplicate by slot identity instead of full payload matching.
-  wire replay_slot_alias = !atomic_active && !stall && !bubble_decode_in &&
-    replay_slot_alias_window &&
-    prev_live_valid && (instr_in == prev_live_instr) &&
-    ((pc_decode_in == prev_live_pc) || (pc_decode_in == (prev_live_pc + 32'd4)));
-  wire [31:0]front_slot_id_aligned = replay_slot_alias ? prev_live_slot_id : front_slot_id;
-  wire replay_front_drop = replay_realign_drop || replay_followup_drop || replay_consecutive_drop;
+  // Frontend queue now preserves packet pairing; keep slot ids and liveness
+  // direct from fetch and do not apply decode-local duplicate filtering.
+  wire replay_slot_alias = 1'b0;
+  wire [31:0]front_slot_id_aligned = front_slot_id;
+  wire replay_front_drop = 1'b0;
 
   wire [4:0]opcode_raw = instr_in[31:27];
   wire [4:0]front_opcode = front_instr[31:27];
@@ -555,12 +550,9 @@ module decode(input clk, input clk_en,
         // (hold while `was_stall`), and only add decode-stall hold.
         if (!was_stall && !(decode_stall && was_decode_stall)) begin
           instr_buf <= mem_out_0;
-          // On stall entry, memory can already be one word ahead while PC
-          // metadata still points at the prior word. Bias buffered PC forward
-          // by one instruction in that specific case so packet pairs stay aligned.
-          pc_buf <= (stall && prev_live_valid &&
-            (pc_in == prev_live_pc) && (mem_out_0 != prev_live_instr)) ?
-            (pc_in + 32'd4) : pc_in;
+          // Frontend queue already preserves instruction/PC pairing.
+          // Keep decode buffering as a strict hold/replay of that packet.
+          pc_buf <= pc_in;
           slot_id_buf <= slot_id_in;
           bubble_buf <= bubble_in;
           exc_buf <= exc_in;

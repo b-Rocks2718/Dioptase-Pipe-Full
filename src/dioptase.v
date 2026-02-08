@@ -68,13 +68,14 @@ module dioptase(
 
     wire [15:0]interrupts;
     wire [15:0]mem_interrupts;
+    wire [31:0]clock_divider;
     wire ps2_ready_flag;
     wire uart_rx_ready;
 
     assign interrupts = mem_interrupts | {13'b0, uart_rx_ready, ps2_ready_flag, 1'b0};
 
     pipelined_cpu cpu(
-        clk, interrupts,
+        clk, interrupts, clock_divider,
         mem_read0_addr, mem_read0_data,
         mem_read_en, mem_read1_addr, mem_read1_data,
         mem_write_en, mem_write_addr, mem_write_data,
@@ -97,7 +98,7 @@ module dioptase(
     assign vga_blue = pixel[11:8];
 
     vga vga(
-        .clk(clk), .clk_100MHz(clk),
+        .clk_100MHz(clk),
         .h_sync_out(vga_h_sync), .v_sync_out(vga_v_sync),
         .pixel_addr_x(pixel_addr_x), .pixel_addr_y(pixel_addr_y),
         .display_out(displaying)
@@ -129,7 +130,7 @@ module dioptase(
         .uart_tx_data(uart_tx_data), .uart_tx_wen(uart_tx_en),
         .uart_rx_data(uart_rx_data), .uart_rx_ren(uart_rx_en),
         .sd_spi_cs(sd_spi_cs), .sd_spi_clk(sd_spi_clk), .sd_spi_mosi(sd_spi_mosi), .sd_spi_miso(sd_spi_miso),
-        .interrupts(mem_interrupts)
+        .interrupts(mem_interrupts), .clock_divider(clock_divider)
     );
 
 endmodule

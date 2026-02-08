@@ -7,7 +7,10 @@ OUT_DIR      		 := tests/out
 
 # Tools
 ASSEMBLER    := ../../Dioptase-Assembler/build/debug/basm
-EMULATOR     := ../../Dioptase-Emulators/Dioptase-Emulator-Full/target/release/Dioptase-Emulator-Full
+EMULATOR_DIR := ../../Dioptase-Emulators/Dioptase-Emulator-Full
+EMULATOR     := $(EMULATOR_DIR)/target/release/Dioptase-Emulator-Full
+EMULATOR_SRCS := $(shell find $(EMULATOR_DIR)/src -type f -name '*.rs') \
+								 $(EMULATOR_DIR)/Cargo.toml $(EMULATOR_DIR)/Cargo.lock
 IVERILOG     := iverilog
 VVP          := vvp
 
@@ -60,6 +63,11 @@ TOTAL            := $(words $(ASM_SRCS))
 
 all: sim.vvp
 
+# Keep the release emulator binary fresh so CPU-vs-emulator comparisons use the
+# same TLB/memory behavior as the current source tree.
+$(EMULATOR): $(EMULATOR_SRCS)
+	cargo build --release --manifest-path $(EMULATOR_DIR)/Cargo.toml
+
 # no idea why this doesnt work
 check-verilator-deps:
 ifeq ($(GTKMM_FOUND),0)
@@ -102,7 +110,7 @@ $(OUT_DIR)/%.emuout: $(HEX_DIR)/%.hex $(EMULATOR) | dirs
 	$(EMULATOR) $(EMULATOR_ARGS) $< | sed '/^Warning:/d' > $@
 
 # Main test target
-test: $(ASM_SRCS) $(VERILOG_SRCS) | dirs
+test: $(ASM_SRCS) $(VERILOG_SRCS) $(EMULATOR) | dirs
 	@GREEN="\033[0;32m"; \
 	RED="\033[0;31m"; \
 	YELLOW="\033[0;33m"; \
@@ -140,7 +148,7 @@ test: $(ASM_SRCS) $(VERILOG_SRCS) | dirs
 	echo "Summary: $$passed / $$total tests passed."
 
 # Main test target
-test-verilator: check-verilator-deps $(ASM_SRCS) $(VERILOG_SRCS) | dirs
+test-verilator: check-verilator-deps $(ASM_SRCS) $(VERILOG_SRCS) $(EMULATOR) | dirs
 	@GREEN="\033[0;32m"; \
 	RED="\033[0;31m"; \
 	YELLOW="\033[0;33m"; \

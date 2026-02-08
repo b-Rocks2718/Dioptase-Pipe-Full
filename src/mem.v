@@ -9,7 +9,8 @@ module mem(input clk, input clk_en,
     output reg [7:0]uart_tx_data, output uart_tx_wen,
     input [7:0]uart_rx_data, output uart_rx_ren,
     output sd_spi_cs, output sd_spi_clk, output sd_spi_mosi, input sd_spi_miso,
-    output [15:0]interrupts
+    output [15:0]interrupts,
+    output [31:0]clock_divider
 );
     // Display memory map (physical):
     // - Tile framebuffer: 0x7FBD000..0x7FBF57F (80x60 entries, 2 bytes each).
@@ -158,6 +159,17 @@ module mem(input clk, input clk_en,
           sprite_14_data[i] = 32'hf000f000;
           sprite_15_data[i] = 32'hf000f000;
         end
+        // Define deterministic reset state for display-backed memories.
+        // cdiv/colors-style programs rely on tile/frame buffers starting clear.
+        for (i = 0; i < 16'h2000; i = i + 1) begin
+          tile_map[i] = 32'd0;
+        end
+        for (i = 0; i < 16'h9600; i = i + 1) begin
+          pixel_buffer[i] = 32'd0;
+        end
+        for (i = 0; i < 16'h960; i = i + 1) begin
+          frame_buffer[i] = 32'd0;
+        end
         for (i = 0; i < 16; i = i + 1) begin
           sprite_scale_regs[i] = 8'd0;
         end
@@ -224,7 +236,6 @@ module mem(input clk, input clk_en,
         pit_cfg_reg = 32'd0;
         vga_frame_count = 32'd0;
         in_vblank_prev = 1'b0;
-        frame_start_prev = 1'b0;
         vga_vblank_irq = 1'b0;
         display_framebuffer_out = 32'd0;
         display_tile_entry_sel = 1'b0;
@@ -295,7 +306,6 @@ module mem(input clk, input clk_en,
     reg [31:0]pit_cfg_reg = 0;
     reg [31:0]vga_frame_count = 0;
     reg in_vblank_prev = 1'b0;
-    reg frame_start_prev = 1'b0;
     reg vga_vblank_irq = 1'b0;
     reg [7:0]sprite_scale_regs[0:15];
 
@@ -468,7 +478,6 @@ module mem(input clk, input clk_en,
     reg [9:0]display_screen_y;
     wire vga_in_hblank = (pixel_x_in >= 10'd640);
     wire vga_in_vblank = (pixel_y_in >= 10'd480);
-    wire vga_frame_start = (pixel_x_in == 10'd0) && (pixel_y_in == 10'd0);
 
     // Tile layer scroll/scale controls the tile framebuffer overlay.
     wire [9:0]tile_pixel_x = (pixel_x_in >> scale_reg) - hscroll_reg[9:0];
@@ -746,11 +755,15 @@ module mem(input clk, input clk_en,
                             32'h0;
 
     wire pit_interrupt;
-    // ignore partial writes to counter address
-    wire pit_we = wen[0] && wen[1] && wen[2] && wen[3] && waddr == PIT_START;
+    // PIT config writes are accepted only on enabled core cycles; timer ticks
+    // continue on the base clock regardless of CPU clock divider.
+    wire pit_we = wen[0] && wen[1] && wen[2] && wen[3] &&
+      (waddr == PIT_START) && clk_en;
 
-    pit pit(clk, clk_en,
-        pit_we, wdata, pit_interrupt);
+    pit pit(
+        clk,
+        pit_we, wdata, pit_interrupt
+    );
 
     sd_spi_controller sd_ctrl(
         .clk(clk),
@@ -772,6 +785,7 @@ module mem(input clk, input clk_en,
     assign sd_spi_cs = sd_spi_cs_int;
     assign sd_spi_clk = sd_spi_clk_int;
     assign sd_spi_mosi = sd_spi_mosi_int;
+    assign clock_divider = clock_div_reg;
     // interrupt bits: [4]=VGA vblank, [3]=SD, [0]=PIT
     assign interrupts = {11'd0, vga_vblank_irq, sd_irq_pending, 2'd0, pit_interrupt};
 
@@ -845,17 +859,14 @@ module mem(input clk, input clk_en,
 
       // VGA status/frame bookkeeping for MMIO.
       // - Status bits are live from current scan position.
-      // - Frame counter increments once per frame start.
-      // - Interrupt pulses when entering vblank.
+      // - Frame counter increments once per vblank entry.
+      // - Interrupt pulses on the same vblank-entry edge.
       vga_vblank_irq <= 1'b0;
       if (vga_in_vblank && !in_vblank_prev) begin
         vga_vblank_irq <= 1'b1;
-      end
-      if (vga_frame_start && !frame_start_prev) begin
         vga_frame_count <= vga_frame_count + 32'd1;
       end
       in_vblank_prev <= vga_in_vblank;
-      frame_start_prev <= vga_frame_start;
 
       if (clk_en) begin
         raddr0_buf <= raddr0;

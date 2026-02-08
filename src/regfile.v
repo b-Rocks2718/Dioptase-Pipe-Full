@@ -31,46 +31,53 @@ module regfile(input clk, input clk_en,
   assign ret_val = regfile[1];
 
   always @(posedge clk) begin
-    if (wen0) begin
-        // ISA: in kernel mode, non-crmv accesses to r31 alias KSP (cr8).
-        if (waddr0 != 5'd0) begin
-          if (kmode && !write0_no_alias && (waddr0 == 5'd31)) begin
-            ksp <= wdata0;
-          end else begin
-            regfile[waddr0] <= wdata0;
+    // Architectural register writes advance only on enabled CPU cycles.
+    // This keeps GPR/KSP updates aligned with pipeline stage registers when
+    // the memory-mapped clock divider inserts pause cycles.
+    if (clk_en) begin
+      if (wen0) begin
+          // ISA: in kernel mode, non-crmv accesses to r31 alias KSP (cr8).
+          if (waddr0 != 5'd0) begin
+            if (kmode && !write0_no_alias && (waddr0 == 5'd31)) begin
+              ksp <= wdata0;
+            end else begin
+              regfile[waddr0] <= wdata0;
+            end
           end
-        end
 `ifdef SIMULATION
-        if ($test$plusargs("reg_debug")) begin
-          if (kmode && !write0_no_alias && (waddr0 == 5'd31))
-            $display("[reg] w0 ksp=%h", wdata0);
-          else
-            $display("[reg] w0 r%0d=%h", waddr0, wdata0);
-        end
-`endif
-    end
-    if (wen1) begin
-        // 2nd write port is used for pre/post increment memory operations.
-        // If both write ports target the same register in one cycle, keep
-        // the address update so post-increment remains architecturally visible.
-        if (waddr1 != 5'd0) begin
-          if (kmode && !write1_no_alias && (waddr1 == 5'd31)) begin
-            ksp <= wdata1;
-          end else begin
-            regfile[waddr1] <= wdata1;
+          if ($test$plusargs("reg_debug")) begin
+            if (kmode && !write0_no_alias && (waddr0 == 5'd31))
+              $display("[reg] w0 ksp=%h", wdata0);
+            else
+              $display("[reg] w0 r%0d=%h", waddr0, wdata0);
           end
-        end
-`ifdef SIMULATION
-        if ($test$plusargs("reg_debug")) begin
-          if (kmode && !write1_no_alias && (waddr1 == 5'd31))
-            $display("[reg] w1 ksp=%h", wdata1);
-          else
-            $display("[reg] w1 r%0d=%h", waddr1, wdata1);
-        end
 `endif
+      end
+      if (wen1) begin
+          // 2nd write port is used for pre/post increment memory operations.
+          // If both write ports target the same register in one cycle, keep
+          // the address update so post-increment remains architecturally visible.
+          if (waddr1 != 5'd0) begin
+            if (kmode && !write1_no_alias && (waddr1 == 5'd31)) begin
+              ksp <= wdata1;
+            end else begin
+              regfile[waddr1] <= wdata1;
+            end
+          end
+`ifdef SIMULATION
+          if ($test$plusargs("reg_debug")) begin
+            if (kmode && !write1_no_alias && (waddr1 == 5'd31))
+              $display("[reg] w1 ksp=%h", wdata1);
+            else
+              $display("[reg] w1 r%0d=%h", waddr1, wdata1);
+          end
+`endif
+      end
     end
 
-    if (!stall) begin
+    // Read-port latches advance with enabled CPU cycles so decode operands
+    // stay phase-aligned with the queued instruction stream.
+    if (!stall && clk_en) begin
       if (raddr0 == 5'd0) begin
         rdata0 <= 32'b0;
       end else if (kmode && !read_no_alias && (raddr0 == 5'd31)) begin
@@ -87,7 +94,6 @@ module regfile(input clk, input clk_en,
         rdata1 <= regfile[raddr1];
       end
     end
-
   end
 
 endmodule

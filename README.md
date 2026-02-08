@@ -112,7 +112,7 @@ Decode keeps ownership (`decode_stall`) until the micro-op sequence drains.
 
 TLB format and behavior follow the emulator/ISA model:
 
-- 8-entry fully-associative TLB.
+- 16-entry fully-associative TLB.
 - Lookup order: PID-private entries first, then global entries.
 - Separate instruction-side (`addr0`) and data-side (`addr1`) checks.
 - Permission faults produce `0x82`/`0x83` depending on mode.

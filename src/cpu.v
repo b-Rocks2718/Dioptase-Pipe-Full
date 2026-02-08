@@ -13,7 +13,7 @@
 //   paired with their metadata across stall windows.
 // - Halt/sleep are latched architectural state derived from writeback/execute.
 module pipelined_cpu(
-  input clk, input [15:0]interrupts,
+  input clk, input [15:0]interrupts, input [31:0]clock_divider,
   output [26:0]mem_read0_addr, input [31:0]mem_read0_data,
   output mem_re, output [26:0]mem_read1_addr, input [31:0]mem_read1_data,
   output [3:0]mem_we, output [26:0]mem_write_addr, output [31:0]mem_write_data,
@@ -25,8 +25,10 @@ module pipelined_cpu(
     wire [31:0]epc_curr;
     wire [31:0]efg_curr;
 
+    reg [31:0]clk_div_count;
     initial begin
       clk_en = 1;
+      clk_div_count = 32'd0;
     end
 
     wire [31:0]pid;
@@ -307,7 +309,9 @@ module pipelined_cpu(
     wire mem_a_is_store_out;
     wire mem_b_is_store_out;
 
-    execute execute(clk, clk_en, halt_or_sleep, decode_bubble_out, 
+    // When a sleep op is already in-flight (reflected by exec_is_sleep_out),
+    // freeze execute immediately so the next younger slot cannot advance.
+    execute execute(clk, clk_en, (halt_or_sleep || exec_is_sleep_out), decode_bubble_out, 
       decode_opcode_out, decode_s_1_out, decode_s_2_out, decode_cr_s_out,
       decode_tgt_out_1, decode_tgt_out_2,
       decode_alu_op_out, decode_imm_out, decode_branch_code_out,
@@ -320,7 +324,8 @@ module pipelined_cpu(
       mem_a_result_out_1, mem_a_result_out_2, 
       mem_b_result_out_1, mem_b_result_out_2,
       wb_result_out_1, wb_result_out_2, 
-      mem_a_tgts_cr_out, mem_b_tgts_cr_out, wb_tgts_cr_out,
+      tlb_mem_tgts_cr_out, mem_a_tgts_cr_out, mem_b_tgts_cr_out, wb_tgts_cr_out,
+      tlb_mem_no_alias_1, mem_a_no_alias_1, mem_b_no_alias_1, wb_no_alias_1,
       decode_pc_out, decode_slot_id_out,
       decode_is_load_out, decode_is_store_out, decode_is_branch_out, 
       tlb_mem_bubble_out, tlb_mem_is_load_out,
@@ -328,6 +333,7 @@ module pipelined_cpu(
       mem_b_bubble_out, mem_b_is_load_out,
       decode_is_post_inc_out, decode_tgts_cr_out, decode_priv_type_out,
       decode_crmov_mode_type_out, decode_exc_out, exc_in_wb, efg_curr, rfe_in_wb,
+      kmode,
       decode_is_atomic_out, decode_is_fetch_add_atomic_out, decode_atomic_step_out,
 
       exec_result_out_1, exec_result_out_2,
@@ -355,7 +361,22 @@ module pipelined_cpu(
     wire [1:0]tlb_mem_crmov_mode_type_out;
     wire [1:0]mem_a_crmov_mode_type_out;
     wire [1:0]mem_b_crmov_mode_type_out;
-    tlb_memory tlb_memory(clk, clk_en, halt_or_sleep,
+    // Kernel-mode r31 accesses alias ksp except for crmov instructions.
+    // Forwarding/hazard logic uses these tags to avoid mixing alias classes.
+    wire tlb_mem_no_alias_1 = kmode && !tlb_mem_bubble_out &&
+      !tlb_mem_tgts_cr_out &&
+      (tlb_mem_opcode_out == 5'd31) && (tlb_mem_priv_type_out == 5'd1) &&
+      ((tlb_mem_crmov_mode_type_out == 2'd1) || (tlb_mem_crmov_mode_type_out == 2'd3));
+    wire mem_a_no_alias_1 = kmode && !mem_a_bubble_out &&
+      !mem_a_tgts_cr_out &&
+      (mem_a_opcode_out == 5'd31) && (mem_a_priv_type_out == 5'd1) &&
+      ((mem_a_crmov_mode_type_out == 2'd1) || (mem_a_crmov_mode_type_out == 2'd3));
+    wire mem_b_no_alias_1 = kmode && !mem_b_bubble_out &&
+      !mem_b_tgts_cr_out &&
+      (mem_b_opcode_out == 5'd31) && (mem_b_priv_type_out == 5'd1) &&
+      ((mem_b_crmov_mode_type_out == 2'd1) || (mem_b_crmov_mode_type_out == 2'd3));
+    // Sleep must not squash older backend stages; only architectural halt does.
+    tlb_memory tlb_memory(clk, clk_en, halt,
       exec_bubble_out, exec_opcode_out, exec_tgt_out_1, exec_tgt_out_2,
       exec_result_out_1, exec_result_out_2, addr,
       exec_is_load_out, exec_is_store_out, exec_is_tlbr_out,
@@ -372,7 +393,7 @@ module pipelined_cpu(
       mem_re, store_data, mem_we
     );
 
-    memory memory_a(clk, clk_en, halt_or_sleep,
+    memory memory_a(clk, clk_en, halt,
       tlb_mem_bubble_out, tlb_mem_opcode_out, tlb_mem_tgt_out_1, tlb_mem_tgt_out_2,
       tlb_mem_result_out_1, tlb_mem_result_out_2, tlb_mem_addr_out,
       tlb_mem_is_load_out, tlb_mem_is_store_out,
@@ -388,7 +409,7 @@ module pipelined_cpu(
       mem_a_crmov_mode_type_out, mem_a_flags_out, mem_a_op1_out, mem_a_op2_out
     );
 
-    memory memory_b(clk, clk_en, halt_or_sleep,
+    memory memory_b(clk, clk_en, halt,
       mem_a_bubble_out, mem_a_opcode_out, mem_a_tgt_out_1, mem_a_tgt_out_2,
       mem_a_result_out_1, mem_a_result_out_2, mem_a_addr_out,
       mem_a_is_load_out, mem_a_is_store_out,
@@ -404,7 +425,7 @@ module pipelined_cpu(
       mem_b_crmov_mode_type_out, mem_b_flags_out, mem_b_op1_out, mem_b_op2_out
     );
 
-    writeback writeback(clk, clk_en, halt_or_sleep, mem_b_bubble_out, mem_b_tgt_out_1, mem_b_tgt_out_2,
+    writeback writeback(clk, clk_en, halt, mem_b_bubble_out, mem_b_tgt_out_1, mem_b_tgt_out_2,
       mem_b_is_load_out, mem_b_is_store_out,
       mem_b_opcode_out,
       mem_b_result_out_1, mem_b_result_out_2, mem_out_1, mem_b_addr_out,
@@ -540,8 +561,19 @@ module pipelined_cpu(
         end
       end
 
-      // Fixed clock-enable for now (future: memory-mapped clock divider).
-      clk_en <= 1'b1;
+      // Memory-mapped clock divider:
+      // - 0 => run every cycle.
+      // - N => emit one enabled cycle every (N+1) base clocks.
+      if (clock_divider == 32'd0) begin
+        clk_en <= 1'b1;
+        clk_div_count <= 32'd0;
+      end else if (clk_div_count >= clock_divider) begin
+        clk_en <= 1'b1;
+        clk_div_count <= 32'd0;
+      end else begin
+        clk_en <= 1'b0;
+        clk_div_count <= clk_div_count + 32'd1;
+      end
     end
 
 endmodule

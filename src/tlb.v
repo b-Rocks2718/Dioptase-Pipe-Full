@@ -1,6 +1,6 @@
 `timescale 1ps/1ps
 
-// Fully-associative 8-entry TLB used by the full pipeline.
+// Fully-associative TLB used by the full pipeline.
 //
 // Behavior summary:
 // - `addr0` is instruction-side translation/permission check.
@@ -17,26 +17,30 @@ module tlb(
   output reg [26:0]addr0_out, output reg [26:0]addr1_out,
   output reg [26:0]read_addr_out
 );
+  // Keep entry count explicit so scaling does not require width/loop rewrites.
+  localparam integer TLB_ENTRIES = 16;
+  localparam integer TLB_INDEX_W = 4;
+
   // TLB entry format (ISA-visible):
   //   key   = PID[31:0] + VPN[19:0]
   //   value = PPN[14:0] + FLAGS[11:0]
   // FLAGS low bits are G/U/X/W/R at [4:0].
-  reg cache_valid[0:7];
-  reg [31:0]cache_pid[0:7];
-  reg [19:0]cache_vpn[0:7];
-  reg [26:0]cache_val[0:7];
+  reg cache_valid[0:TLB_ENTRIES-1];
+  reg [31:0]cache_pid[0:TLB_ENTRIES-1];
+  reg [19:0]cache_vpn[0:TLB_ENTRIES-1];
+  reg [26:0]cache_val[0:TLB_ENTRIES-1];
 
-  reg [2:0]eviction_tgt;
+  reg [TLB_INDEX_W-1:0]eviction_tgt;
   integer i;
 
   initial begin
-    for (i = 0; i < 8; i = i + 1) begin
+    for (i = 0; i < TLB_ENTRIES; i = i + 1) begin
       cache_valid[i] = 1'b0;
       cache_pid[i] = 32'd0;
       cache_vpn[i] = 20'd0;
       cache_val[i] = 27'd0;
     end
-    eviction_tgt = 3'd0;
+    eviction_tgt = {TLB_INDEX_W{1'b0}};
     exc_out0 = 8'd0;
     exc_out1 = 8'd0;
     addr0_out = 27'd0;
@@ -71,7 +75,7 @@ module tlb(
     read_hit = 1'b0;
     read_value = 27'd0;
 
-    for (li = 0; li < 8; li = li + 1) begin
+    for (li = 0; li < TLB_ENTRIES; li = li + 1) begin
       if (!match0_hit && cache_valid[li] && (cache_pid[li] == pid) && (cache_vpn[li] == vpn0)) begin
         match0_hit = 1'b1;
         match0_value = cache_val[li];
@@ -86,7 +90,7 @@ module tlb(
       end
     end
 
-    for (li = 0; li < 8; li = li + 1) begin
+    for (li = 0; li < TLB_ENTRIES; li = li + 1) begin
       if (!match0_hit && cache_valid[li] && cache_val[li][4] && (cache_vpn[li] == vpn0)) begin
         match0_hit = 1'b1;
         match0_value = cache_val[li];
@@ -126,33 +130,33 @@ module tlb(
     (match1_hit ? translated_addr1 : addr1[26:0]);
 
   reg write_match_found;
-  reg [2:0]write_match_idx;
+  reg [TLB_INDEX_W-1:0]write_match_idx;
   always @(*) begin
     write_match_found = 1'b0;
-    write_match_idx = 3'd0;
+    write_match_idx = {TLB_INDEX_W{1'b0}};
 
     // Global writes replace existing global VPN entries.
     // Private writes replace existing PID+VPN private entries.
     if (write_data[4]) begin
-      for (li = 0; li < 8; li = li + 1) begin
+      for (li = 0; li < TLB_ENTRIES; li = li + 1) begin
         if (!write_match_found && cache_valid[li] && cache_val[li][4] &&
             (cache_vpn[li] == vpn_read)) begin
           write_match_found = 1'b1;
-          write_match_idx = li[2:0];
+          write_match_idx = li[TLB_INDEX_W-1:0];
         end
       end
     end else begin
-      for (li = 0; li < 8; li = li + 1) begin
+      for (li = 0; li < TLB_ENTRIES; li = li + 1) begin
         if (!write_match_found && cache_valid[li] && !cache_val[li][4] &&
             (cache_pid[li] == pid) && (cache_vpn[li] == vpn_read)) begin
           write_match_found = 1'b1;
-          write_match_idx = li[2:0];
+          write_match_idx = li[TLB_INDEX_W-1:0];
         end
       end
     end
   end
 
-  wire [2:0]write_idx = write_match_found ? write_match_idx : eviction_tgt;
+  wire [TLB_INDEX_W-1:0]write_idx = write_match_found ? write_match_idx : eviction_tgt;
 
   always @(posedge clk) begin
     if (clk_en) begin
@@ -172,14 +176,14 @@ module tlb(
       end
 `endif
       if (clear) begin
-        for (i = 0; i < 8; i = i + 1) begin
+        for (i = 0; i < TLB_ENTRIES; i = i + 1) begin
           cache_valid[i] <= 1'b0;
         end
-        eviction_tgt <= 3'd0;
+        eviction_tgt <= {TLB_INDEX_W{1'b0}};
       end else if (invalidate) begin
         // Match emulator invalidation behavior: invalidate PID+VPN private
         // entry and any global entry with the same VPN.
-        for (i = 0; i < 8; i = i + 1) begin
+        for (i = 0; i < TLB_ENTRIES; i = i + 1) begin
           if (cache_valid[i] &&
               (cache_vpn[i] == vpn_read) &&
               (cache_val[i][4] || (cache_pid[i] == pid))) begin
@@ -192,7 +196,7 @@ module tlb(
         cache_vpn[write_idx] <= vpn_read;
         cache_val[write_idx] <= write_data[26:0];
         if (!write_match_found) begin
-          eviction_tgt <= eviction_tgt + 3'd1;
+          eviction_tgt <= eviction_tgt + 1'b1;
         end
       end
 
