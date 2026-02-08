@@ -14,7 +14,7 @@ module tlb(
   input we, input [31:0]write_data, input invalidate, input [7:0]exc_in, input clear,
   input addr1_read_req, input addr1_write_req,
   output reg [7:0]exc_out0, output reg [7:0]exc_out1,
-  output reg [17:0]addr0_out, output reg [17:0]addr1_out,
+  output reg [26:0]addr0_out, output reg [26:0]addr1_out,
   output reg [26:0]read_addr_out
 );
   // TLB entry format (ISA-visible):
@@ -39,8 +39,8 @@ module tlb(
     eviction_tgt = 3'd0;
     exc_out0 = 8'd0;
     exc_out1 = 8'd0;
-    addr0_out = 18'd0;
-    addr1_out = 18'd0;
+    addr0_out = 27'd0;
+    addr1_out = 27'd0;
     read_addr_out = 27'd0;
   end
 
@@ -115,15 +115,15 @@ module tlb(
     (data_fault ? (kmode ? 8'h83 : 8'h82) : 8'd0);
   wire is_exc = (exc_out1 != 8'd0);
 
-  // Physical memory bus is 18-bit in this FPGA pipeline implementation.
-  // ISA TLB value keeps full 15-bit PPN; low 6 bits are used by this memory bus.
-  wire [17:0]translated_addr0 = {match0_value[17:12], addr0[11:0]};
-  wire [17:0]translated_addr1 = {match1_value[17:12], addr1[11:0]};
+  // Physical memory bus is 27-bit in this FPGA pipeline implementation.
+  // ISA TLB value stores PPN[14:0] in value[26:12].
+  wire [26:0]translated_addr0 = {match0_value[26:12], addr0[11:0]};
+  wire [26:0]translated_addr1 = {match1_value[26:12], addr1[11:0]};
 
-  wire [17:0]addr0_phys_next = bypass_addr0 ? addr0[17:0] :
-    (match0_hit ? translated_addr0 : 18'd0);
-  wire [17:0]addr1_phys_next = bypass_addr1 ? addr1[17:0] :
-    (match1_hit ? translated_addr1 : addr1[17:0]);
+  wire [26:0]addr0_phys_next = bypass_addr0 ? addr0[26:0] :
+    (match0_hit ? translated_addr0 : 27'd0);
+  wire [26:0]addr1_phys_next = bypass_addr1 ? addr1[26:0] :
+    (match1_hit ? translated_addr1 : addr1[26:0]);
 
   reg write_match_found;
   reg [2:0]write_match_idx;
@@ -199,7 +199,7 @@ module tlb(
       exc_out0 <= exc0_next;
       exc_out1 <= exc1_next;
       addr0_out <= addr0_phys_next;
-      addr1_out <= is_exc ? {8'b0, exc_out1, 2'b0} : addr1_phys_next;
+      addr1_out <= is_exc ? {17'b0, exc_out1, 2'b0} : addr1_phys_next;
       read_addr_out <= read_hit ? read_value : 27'd0;
     end
   end

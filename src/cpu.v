@@ -8,14 +8,15 @@
 //
 // Control invariants:
 // - `flush` removes younger work after redirects/exceptions/sleep transitions.
-// - `frontend_stop` holds fetch/decode when execute hazards or decode crack
-//   sequencing require replay/serialization.
+// - `frontend_issue_stop` gates new fetch issue on backend stalls/queue pressure.
+// - Decode consumes from a frontend packet queue so in-flight returns stay
+//   paired with their metadata across stall windows.
 // - Halt/sleep are latched architectural state derived from writeback/execute.
 module pipelined_cpu(
   input clk, input [15:0]interrupts,
-  output [17:0]mem_read0_addr, input [31:0]mem_read0_data,
-  output mem_re, output [17:0]mem_read1_addr, input [31:0]mem_read1_data,
-  output [3:0]mem_we, output [17:0]mem_write_addr, output [31:0]mem_write_data,
+  output [26:0]mem_read0_addr, input [31:0]mem_read0_data,
+  output mem_re, output [26:0]mem_read1_addr, input [31:0]mem_read1_data,
+  output [3:0]mem_we, output [26:0]mem_write_addr, output [31:0]mem_write_data,
   output [31:0]ret_val, output [3:0]flags, output [31:0]curr_pc,
   output reg clk_en
 );
@@ -47,8 +48,8 @@ module pipelined_cpu(
     // read from memory
     wire [31:0]mem_out_0;
     wire [31:0]fetch_addr;
-    wire [17:0]tlb_out_0;
-    wire [17:0]tlb_out_1;
+    wire [26:0]tlb_out_0;
+    wire [26:0]tlb_out_1;
     wire [31:0]mem_out_1;
 
     wire [31:0]exec_result_out_1;
@@ -86,9 +87,27 @@ module pipelined_cpu(
     wire decode_stall;
     wire halt_pending;
     wire exception_in_pipe;
-    reg stall_d = 1'b0;
-    // Stop condition for frontend fetch progression.
-    wire frontend_stop = stall | decode_stall | stall_d | halt_or_sleep | halt_pending;
+    localparam FRONTQ_DEPTH = 8;
+    localparam FRONTQ_PTR_W = 3;
+    localparam FRONTQ_COUNT_W = 4;
+    localparam [FRONTQ_COUNT_W-1:0] FRONTQ_STOP_LEVEL = 4'd6;
+    // Frontend queue stores fully paired fetch packets at decode boundary.
+    reg [31:0]frontq_instr[0:FRONTQ_DEPTH-1];
+    reg [31:0]frontq_pc[0:FRONTQ_DEPTH-1];
+    reg [31:0]frontq_slot[0:FRONTQ_DEPTH-1];
+    reg [7:0]frontq_exc[0:FRONTQ_DEPTH-1];
+    reg frontq_bubble[0:FRONTQ_DEPTH-1];
+    reg [FRONTQ_PTR_W-1:0]frontq_rptr = 0;
+    reg [FRONTQ_PTR_W-1:0]frontq_wptr = 0;
+    reg [FRONTQ_COUNT_W-1:0]frontq_count = 0;
+    reg decode_stall_prev = 1'b0;
+    wire frontq_empty = (frontq_count == 0);
+    wire frontq_full = (frontq_count == FRONTQ_DEPTH);
+    wire frontq_almost_full = (frontq_count >= FRONTQ_STOP_LEVEL);
+    // Stop new fetch issue on backend stalls or queue pressure.
+    // In-flight fetch packets are still absorbed by the frontend queue.
+    wire frontend_issue_stop =
+      stall | decode_stall | frontq_almost_full | halt_or_sleep | halt_pending;
     wire [31:0]branch_tgt;
     wire [31:0]decode_pc_out;
     wire [31:0]tlb_fetch_pc_out;
@@ -130,8 +149,18 @@ module pipelined_cpu(
     wire [31:0]mem_a_op2_out;
     wire [31:0]mem_b_op1_out;
     wire [31:0]mem_b_op2_out;
+    wire [31:0]frontq_instr_head = frontq_instr[frontq_rptr];
+    wire [31:0]frontq_pc_head = frontq_pc[frontq_rptr];
+    wire [31:0]frontq_slot_head = frontq_slot[frontq_rptr];
+    wire [7:0]frontq_exc_head = frontq_exc[frontq_rptr];
+    wire frontq_bubble_head = frontq_bubble[frontq_rptr];
+    wire [31:0]decode_instr_in = frontq_empty ? 32'd0 : frontq_instr_head;
+    wire decode_bubble_in = frontq_empty ? 1'b1 : frontq_bubble_head;
+    wire [31:0]decode_pc_in = frontq_empty ? 32'd0 : frontq_pc_head;
+    wire [31:0]decode_slot_in = frontq_empty ? 32'd0 : frontq_slot_head;
+    wire [7:0]decode_exc_in = frontq_empty ? 8'd0 : frontq_exc_head;
 
-    tlb_fetch tlb_fetch(clk, clk_en, frontend_stop, branch, branch_tgt,
+    tlb_fetch tlb_fetch(clk, clk_en, frontend_issue_stop, branch, branch_tgt,
       exc_in_wb, mem_out_1, rfe_in_wb, epc_curr, 
       fetch_addr, tlb_fetch_pc_out, tlb_fetch_slot_id_out, tlb_fetch_bubble_out, tlb_fetch_exc_out
     );
@@ -140,15 +169,27 @@ module pipelined_cpu(
     wire [31:0]fetch_b_pc_out;
     wire [7:0]fetch_b_exc_out;
 
-    fetch_a fetch_a(clk, clk_en, frontend_stop, flush, tlb_fetch_bubble_out, tlb_fetch_pc_out, tlb_fetch_slot_id_out,
+    fetch_a fetch_a(clk, clk_en, flush, tlb_fetch_bubble_out, tlb_fetch_pc_out, tlb_fetch_slot_id_out,
       tlb_fetch_exc_out, exc_tlb_0,
       fetch_a_bubble_out, fetch_a_pc_out, fetch_a_slot_id_out, fetch_a_exc_out
     );
 
-    fetch_b fetch_b(clk, clk_en, frontend_stop, flush, fetch_a_bubble_out, fetch_a_pc_out, fetch_a_slot_id_out,
+    fetch_b fetch_b(clk, clk_en, flush, fetch_a_bubble_out, fetch_a_pc_out, fetch_a_slot_id_out,
       fetch_a_exc_out,
       fetch_b_bubble_out, fetch_b_pc_out, fetch_b_slot_id_out, fetch_b_exc_out
     );
+    // Enqueue only live fetched slots (or live exception slots).
+    wire frontq_in_valid = !fetch_b_bubble_out || (fetch_b_exc_out != 8'd0);
+    // Decode consumes a queued frontend slot when:
+    // - execute is not stalling decode, and
+    // - decode is not in steady-state atomic crack hold.
+    // The decode_stall rising edge (atomic start) still consumes one slot.
+    wire decode_front_take = !frontq_empty && !stall &&
+      !(halt_or_sleep || halt_pending) &&
+      (!decode_stall || !decode_stall_prev);
+    wire frontq_pop = decode_front_take && !flush;
+    // Allow enqueue on a full cycle if decode also pops this cycle.
+    wire frontq_push = frontq_in_valid && !flush && (!frontq_full || frontq_pop);
 
     wire [4:0] decode_opcode_out;
     wire [4:0] decode_s_1_out;
@@ -196,13 +237,13 @@ module pipelined_cpu(
       {12'b0, mem_b_addr_out[31:12]} : tlb_fault_addr_latched;
 
     decode decode(clk, clk_en, flush, halt_or_sleep || halt_pending,
-      mem_out_0, fetch_b_bubble_out, fetch_b_pc_out, fetch_b_slot_id_out,
+      decode_instr_in, decode_bubble_in, decode_pc_in, decode_slot_in,
       reg_we_1, mem_b_tgt_out_1, reg_write_data_1,
       reg_we_2, mem_b_tgt_out_2, reg_write_data_2,
       wb_no_alias_1, wb_no_alias_2,
       mem_b_tgts_cr_out,
       stall,
-      fetch_b_exc_out,
+      decode_exc_in,
 
       epc_source, {28'b0, mem_b_flags_out}, flags, tlb_addr_for_creg,
       exc_in_wb, tlb_exc_in_wb, interrupts,
@@ -256,6 +297,15 @@ module pipelined_cpu(
     wire [31:0]exec_pc_out;
     wire [31:0]exec_op1_out; 
     wire [31:0]exec_op2_out;
+    wire tlb_mem_bubble_out;
+    wire mem_a_bubble_out;
+    wire mem_b_bubble_out;
+    wire tlb_mem_is_load_out;
+    wire mem_a_is_load_out;
+    wire mem_b_is_load_out;
+    wire tlb_mem_is_store_out;
+    wire mem_a_is_store_out;
+    wire mem_b_is_store_out;
 
     execute execute(clk, clk_en, halt_or_sleep, decode_bubble_out, 
       decode_opcode_out, decode_s_1_out, decode_s_2_out, decode_cr_s_out,
@@ -295,16 +345,6 @@ module pipelined_cpu(
       (exec_priv_type_out == 5'd2) &&
       (exec_crmov_mode_type_out == 2'd1) &&
       !exec_bubble_out;
-
-    wire tlb_mem_bubble_out;
-    wire mem_a_bubble_out;
-    wire mem_b_bubble_out;
-    wire tlb_mem_is_load_out;
-    wire mem_a_is_load_out;
-    wire mem_b_is_load_out;
-    wire tlb_mem_is_store_out;
-    wire mem_a_is_store_out;
-    wire mem_b_is_store_out;
 
     wire [7:0]tlb_mem_exc_out;
     wire [7:0]mem_a_exc_out;
@@ -436,6 +476,44 @@ module pipelined_cpu(
       mem_a_has_halt || mem_b_has_halt || wb_halt
     );
 
+    // Frontend packet queue update.
+    // This decouples fetch return timing from decode stalls and keeps
+    // instruction/pc/slot/exception packets paired.
+    always @(posedge clk) begin
+      if (clk_en) begin
+        if (flush) begin
+          frontq_rptr <= 0;
+          frontq_wptr <= 0;
+          frontq_count <= 0;
+        end else begin
+          if (frontq_push) begin
+            frontq_instr[frontq_wptr] <= mem_out_0;
+            frontq_pc[frontq_wptr] <= fetch_b_pc_out;
+            frontq_slot[frontq_wptr] <= fetch_b_slot_id_out;
+            frontq_exc[frontq_wptr] <= fetch_b_exc_out;
+            frontq_bubble[frontq_wptr] <= fetch_b_bubble_out;
+          end
+          case ({frontq_push, frontq_pop})
+            2'b10: begin
+              frontq_wptr <= frontq_wptr + 1'b1;
+              frontq_count <= frontq_count + 1'b1;
+            end
+            2'b01: begin
+              frontq_rptr <= frontq_rptr + 1'b1;
+              frontq_count <= frontq_count - 1'b1;
+            end
+            2'b11: begin
+              frontq_wptr <= frontq_wptr + 1'b1;
+              frontq_rptr <= frontq_rptr + 1'b1;
+            end
+            default: begin
+            end
+          endcase
+        end
+        decode_stall_prev <= flush ? 1'b0 : decode_stall;
+      end
+    end
+
     always @(posedge clk) begin
       if (clk_en) begin
 `ifdef SIMULATION
@@ -444,13 +522,12 @@ module pipelined_cpu(
             decode_pc_out, decode_opcode_out, decode_tgt_out_1, decode_tgt_out_2, decode_bubble_out, decode_exc_out,
             exec_opcode_out, exec_tgt_out_1, exec_tgt_out_2, exec_bubble_out, exec_exc_out,
             mem_b_opcode_out, mem_b_tgt_out_1, mem_b_result_out_1, mem_b_bubble_out, wb_tgt_out_1, reg_we_1, reg_write_data_1,
-            exc_in_wb, rfe_in_wb, frontend_stop);
+            exc_in_wb, rfe_in_wb, frontend_issue_stop);
         end
 `endif
         if (mem_b_tlb_fault_live) begin
           tlb_fault_addr_latched <= {12'b0, mem_b_addr_out[31:12]};
         end
-        stall_d <= stall;
         halt <= halt ? 1 : wb_halt;
         sleep <= sleep ? (interrupt_state == 32'b0) : exec_is_sleep_out;
         if (exec_is_sleep_out) begin

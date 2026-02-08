@@ -1,9 +1,9 @@
 `timescale 1ps/1ps
 
 module mem(input clk, input clk_en,
-    input [17:0]raddr0, output reg [31:0]rdata0,
-    input ren, input [17:0]raddr1, output reg [31:0]rdata1,
-    input [3:0]wen, input [17:0]waddr, input [31:0]wdata,
+    input [26:0]raddr0, output reg [31:0]rdata0,
+    input ren, input [26:0]raddr1, output reg [31:0]rdata1,
+    input [3:0]wen, input [26:0]waddr, input [31:0]wdata,
     output ps2_ren, input [15:0]ps2_data_in,
     input [9:0]pixel_x_in, input [9:0]pixel_y_in, output [11:0]pixel,
     output reg [7:0]uart_tx_data, output uart_tx_wen,
@@ -11,54 +11,69 @@ module mem(input clk, input clk_en,
     output sd_spi_cs, output sd_spi_clk, output sd_spi_mosi, input sd_spi_miso,
     output [15:0]interrupts
 );
-    localparam PS2_REG = 18'h20000;
-    localparam HSCROLL_REG = 18'h2fffc;
-    localparam VSCROLL_REG = 18'h2fffe;
-    localparam SCALE_REG = 18'h2fffb;
-    localparam UART_TX_REG = 18'h20002;
-    localparam UART_RX_REG = 18'h20003;
-    localparam PIT_START = 18'h20004;
+    localparam RAM_END = 27'h0020000; // 128KiB RAM window
 
-    localparam TILEMAP_START = 18'h2a000;
-    localparam FRAMEBUFFER_START = 18'h2e000;
-    localparam FRAMEBUFFER_END = 18'h2fe00;
+    localparam FRAMEBUFFER_START = 27'h7FBD000; // tile framebuffer (entries)
+    localparam FRAMEBUFFER_SIZE = 27'd9600;     // 80 * 60 * 2 bytes
+    localparam FRAMEBUFFER_END = FRAMEBUFFER_START + FRAMEBUFFER_SIZE; // exclusive
+    localparam TILEMAP_START = 27'h7FE8000;
+    localparam TILEMAP_END = 27'h7FF0000;       // exclusive
 
-    localparam SPRITE_0_START = 18'h26000;
-    localparam SPRITE_1_START = 18'h26800;
-    localparam SPRITE_2_START = 18'h27000;
-    localparam SPRITE_3_START = 18'h27800;
-    localparam SPRITE_4_START = 18'h28000;
-    localparam SPRITE_5_START = 18'h28800;
-    localparam SPRITE_6_START = 18'h29000;
-    localparam SPRITE_7_START = 18'h29800;
+    localparam SPRITE_0_START = 27'h7FF0000;
+    localparam SPRITE_1_START = 27'h7FF0800;
+    localparam SPRITE_2_START = 27'h7FF1000;
+    localparam SPRITE_3_START = 27'h7FF1800;
+    localparam SPRITE_4_START = 27'h7FF2000;
+    localparam SPRITE_5_START = 27'h7FF2800;
+    localparam SPRITE_6_START = 27'h7FF3000;
+    localparam SPRITE_7_START = 27'h7FF3800;
+    localparam SPRITE_DATA_END = 27'h7FF4000; // sprites 0..7 in this implementation
 
-    localparam SPRITE_0_X = 18'h2ffd0;
-    localparam SPRITE_0_Y = 18'h2ffd2;
-    localparam SPRITE_1_X = 18'h2ffd4;
-    localparam SPRITE_1_Y = 18'h2ffd6;
-    localparam SPRITE_2_X = 18'h2ffd8;
-    localparam SPRITE_2_Y = 18'h2ffda;
-    localparam SPRITE_3_X = 18'h2ffdc;
-    localparam SPRITE_3_Y = 18'h2ffde;
-    localparam SPRITE_4_X = 18'h2ffe0;
-    localparam SPRITE_4_Y = 18'h2ffe2;
-    localparam SPRITE_5_X = 18'h2ffe4;
-    localparam SPRITE_5_Y = 18'h2ffe6;
-    localparam SPRITE_6_X = 18'h2ffe8;
-    localparam SPRITE_6_Y = 18'h2ffea;
-    localparam SPRITE_7_X = 18'h2ffec;
-    localparam SPRITE_7_Y = 18'h2ffee;
+    localparam PS2_REG = 27'h7FE5800;
+    localparam UART_TX_REG = 27'h7FE5802;
+    localparam UART_RX_REG = 27'h7FE5803;
+    localparam PIT_START = 27'h7FE5804;
 
-    localparam SD_START_REG = 18'h201f9;
-    localparam SD_CMD_BASE = 18'h201fa;
-    localparam SD_CMD_END = 18'h201ff;
-    localparam SD_DATA_BASE = 18'h20200;
-    localparam SD_DATA_END = 18'h203ff;
+    localparam SPRITE_0_X = 27'h7FE5B00;
+    localparam SPRITE_0_Y = 27'h7FE5B02;
+    localparam SPRITE_1_X = 27'h7FE5B04;
+    localparam SPRITE_1_Y = 27'h7FE5B06;
+    localparam SPRITE_2_X = 27'h7FE5B08;
+    localparam SPRITE_2_Y = 27'h7FE5B0A;
+    localparam SPRITE_3_X = 27'h7FE5B0C;
+    localparam SPRITE_3_Y = 27'h7FE5B0E;
+    localparam SPRITE_4_X = 27'h7FE5B10;
+    localparam SPRITE_4_Y = 27'h7FE5B12;
+    localparam SPRITE_5_X = 27'h7FE5B14;
+    localparam SPRITE_5_Y = 27'h7FE5B16;
+    localparam SPRITE_6_X = 27'h7FE5B18;
+    localparam SPRITE_6_Y = 27'h7FE5B1A;
+    localparam SPRITE_7_X = 27'h7FE5B1C;
+    localparam SPRITE_7_Y = 27'h7FE5B1E;
 
-    // we got 1800Kb total on the Basys 3
-    (* ram_style = "block" *) reg [31:0]ram[0:16'h7fff]; // 1049Kb (0x0000-0x1FFFF)
+    localparam HSCROLL_REG = 27'h7FE5B40;
+    localparam VSCROLL_REG = 27'h7FE5B42;
+    localparam SCALE_REG = 27'h7FE5B44;
+    localparam VGA_STATUS_REG = 27'h7FE5B46;
+    localparam VGA_FRAME_REG = 27'h7FE5B48;
+    localparam CLOCK_DIV_REG = 27'h7FE5B4C;
+    localparam PIXEL_HSCROLL_REG = 27'h7FE5B50;
+    localparam PIXEL_VSCROLL_REG = 27'h7FE5B52;
+    localparam PIXEL_SCALE_REG = 27'h7FE5B54;
+    localparam SPRITE_SCALE_BASE = 27'h7FE5B60;
+    localparam SPRITE_SCALE_END = 27'h7FE5B70;
 
-    // 131Kb (0x26000-0x29FFF)
+    // Current simple SD controller register surface.
+    localparam SD_START_REG = 27'h7FE581C;
+    localparam SD_CMD_BASE = 27'h7FE5810;
+    localparam SD_CMD_END = 27'h7FE5815;
+    localparam SD_DATA_BASE = 27'h7FE5820;
+    localparam SD_DATA_END = 27'h7FE583F;
+
+    // 128KiB low physical RAM window (0x0000000 - 0x001FFFF).
+    (* ram_style = "block" *) reg [31:0]ram[0:16'h7fff];
+
+    // Sprite backing storage (implemented sprites: 0..7).
     reg [31:0]sprite_0_data[0:16'h1ff];
     reg [31:0]sprite_1_data[0:16'h1ff];
     reg [31:0]sprite_2_data[0:16'h1ff];
@@ -68,8 +83,9 @@ module mem(input clk, input clk_en,
     reg [31:0]sprite_6_data[0:16'h1ff];
     reg [31:0]sprite_7_data[0:16'h1ff];
     
-    (* ram_style = "block" *) reg [31:0]tile_map[0:16'h0fff]; // 131Kb (0x2A000-0x2DFFF)
-    (* ram_style = "block" *) reg [31:0]frame_buffer[0:16'h07ff]; // 7.5KB (0x2E000-0x2FDFF)
+    // Tile map + tile framebuffer storage for the high MMIO regions.
+    (* ram_style = "block" *) reg [31:0]tile_map[0:16'h1fff];
+    (* ram_style = "block" *) reg [31:0]frame_buffer[0:16'h095f];
 
     reg [1023:0] hexfile; // buffer for filename
 
@@ -92,6 +108,9 @@ module mem(input clk, input clk_en,
           sprite_6_data[i] = 32'hf000f000;
           sprite_7_data[i] = 32'hf000f000;
         end
+        for (i = 0; i < 16; i = i + 1) begin
+          sprite_scale_regs[i] = 8'd0;
+        end
         for (i = 0; i < 6; i = i + 1) begin
           sd_cmd_buffer[i] = 8'h00;
         end
@@ -101,9 +120,9 @@ module mem(input clk, input clk_en,
         sd_start_pending = 1'b0;
         sd_start_strobe = 1'b0;
         sd_irq_pending = 1'b0;
-        raddr0_buf = 18'd0;
-        raddr1_buf = 18'd0;
-        waddr_buf = 18'd0;
+        raddr0_buf = 27'd0;
+        raddr1_buf = 27'd0;
+        waddr_buf = 27'd0;
         ren_buf = 1'b0;
         wen_buf = 4'd0;
         ram_data0_out = 32'd0;
@@ -131,11 +150,15 @@ module mem(input clk, input clk_en,
         rdata0 = 32'd0;
         rdata1 = 32'd0;
         uart_tx_data = 8'd0;
+        pixel_scale_reg = 8'd0;
+        pixel_vscroll_reg = 16'd0;
+        pixel_hscroll_reg = 16'd0;
+        clock_div_reg = 32'd0;
     end
 
-    reg [17:0]raddr0_buf;
-    reg [17:0]raddr1_buf;
-    reg [17:0]waddr_buf;
+    reg [26:0]raddr0_buf;
+    reg [26:0]raddr1_buf;
+    reg [26:0]waddr_buf;
     reg ren_buf = 1'b0;
 
     reg [3:0]wen_buf;
@@ -167,10 +190,15 @@ module mem(input clk, input clk_en,
     reg [7:0]scale_reg = 0;
     reg [15:0]vscroll_reg = 0;
     reg [15:0]hscroll_reg = 0;
+    reg [7:0]pixel_scale_reg = 0;
+    reg [15:0]pixel_vscroll_reg = 0;
+    reg [15:0]pixel_hscroll_reg = 0;
+    reg [31:0]clock_div_reg = 0;
+    reg [7:0]sprite_scale_regs[0:15];
 
     integer scroll_lane;
-    reg [17:0]scroll_word_base;
-    reg [17:0]scroll_byte_addr;
+    reg [26:0]scroll_word_base;
+    reg [26:0]scroll_byte_addr;
     reg [7:0]scroll_byte_data;
     reg [8:0]sd_byte_offset;
     integer sd_copy_idx;
@@ -241,7 +269,7 @@ module mem(input clk, input clk_en,
     endgenerate
 
     assign ps2_ren = (raddr1_buf == PS2_REG) && ren_buf;
-    assign uart_tx_wen = (waddr_buf[17:2] == UART_TX_REG[17:2]) && wen_buf[waddr_buf[1:0]];
+    assign uart_tx_wen = (waddr_buf[26:2] == UART_TX_REG[26:2]) && wen_buf[waddr_buf[1:0]];
     assign uart_rx_ren = (raddr1_buf == UART_RX_REG) && ren_buf;
 
     genvar sd_data_i;
@@ -271,6 +299,15 @@ module mem(input clk, input clk_en,
       (display_tile_index == 2'd2) ? display_framebuffer_out[23:16] :
       display_framebuffer_out[31:24];
     wire [15:0] pixel_idx = {2'b0, display_tile, 6'b0} + {10'b0, display_pixel_y[2:0], 3'b0} + {13'b0, display_pixel_x[2:0]}; // tile_idx * 64 + py % 8 * 8 + px % 8
+    // Use explicitly sized indices so Verilator does not infer oversized array selects.
+    wire [11:0] display_frame_word_idx = {1'b0, display_frame_addr[12:2]};
+    wire [12:0] display_tile_word_idx = pixel_idx[13:1];
+    wire [8:0] sprite_word_idx_r = raddr1[10:2];
+    wire [8:0] sprite_word_idx_w = waddr[10:2];
+    wire [12:0] tile_word_idx_r = raddr1[14:2];
+    wire [12:0] tile_word_idx_w = waddr[14:2];
+    wire [11:0] frame_word_idx_r = raddr1[13:2] - FRAMEBUFFER_START[13:2];
+    wire [11:0] frame_word_idx_w = waddr[13:2] - FRAMEBUFFER_START[13:2];
     wire [31:0] pixel_word = 
       sprite_7_onscreen ? display_sprite_7_out : 
       sprite_6_onscreen ? display_sprite_6_out : 
@@ -339,7 +376,7 @@ module mem(input clk, input clk_en,
     endfunction
 
     function [7:0]sd_read_byte;
-        input [17:0]addr;
+        input [26:0]addr;
         reg [8:0]offset;
         begin
             if (addr == SD_START_REG) begin
@@ -348,7 +385,7 @@ module mem(input clk, input clk_en,
                 offset = {6'b0, addr[2:0]} - {6'b0, SD_CMD_BASE[2:0]};
                 sd_read_byte = sd_cmd_buffer[offset[2:0]];
             end else if (SD_DATA_BASE <= addr && addr <= SD_DATA_END) begin
-                offset = addr[8:0];
+                offset = addr[8:0] - SD_DATA_BASE[8:0];
                 sd_read_byte = sd_data_buffer[offset];
             end else begin
                 sd_read_byte = 8'h00;
@@ -356,18 +393,18 @@ module mem(input clk, input clk_en,
         end
     endfunction
     function [31:0]sd_read_word;
-        input [17:0]addr;
-        reg [17:0]base;
+        input [26:0]addr;
+        reg [26:0]base;
         begin
-            base = {addr[17:2], 2'b00};
-            sd_read_word = {sd_read_byte(base + 18'd3), sd_read_byte(base + 18'd2),
-                            sd_read_byte(base + 18'd1), sd_read_byte(base)};
+            base = {addr[26:2], 2'b00};
+            sd_read_word = {sd_read_byte(base + 27'd3), sd_read_byte(base + 27'd2),
+                            sd_read_byte(base + 27'd1), sd_read_byte(base)};
         end
     endfunction
     wire [31:0]data0_out = ram_data0_out;
-    wire sd_window_selected = ren_buf && (SD_START_REG <= raddr1_buf) && (raddr1_buf <= SD_DATA_END);
+    wire sd_window_selected = ren_buf && (SD_CMD_BASE <= raddr1_buf) && (raddr1_buf <= SD_DATA_END);
     wire [31:0]data1_out =  sd_window_selected ? sd_read_word(raddr1_buf) :
-      raddr1_buf < PS2_REG ? ram_data1_out :
+      (FRAMEBUFFER_START <= raddr1_buf && raddr1_buf < FRAMEBUFFER_END) ? framebuffer_data1_out :
       (SPRITE_0_START <= raddr1_buf && raddr1_buf < SPRITE_1_START) ? sprite_0_data1_out :
       (SPRITE_1_START <= raddr1_buf && raddr1_buf < SPRITE_2_START) ? sprite_1_data1_out :
       (SPRITE_2_START <= raddr1_buf && raddr1_buf < SPRITE_3_START) ? sprite_2_data1_out :
@@ -375,9 +412,8 @@ module mem(input clk, input clk_en,
       (SPRITE_4_START <= raddr1_buf && raddr1_buf < SPRITE_5_START) ? sprite_4_data1_out :
       (SPRITE_5_START <= raddr1_buf && raddr1_buf < SPRITE_6_START) ? sprite_5_data1_out :
       (SPRITE_6_START <= raddr1_buf && raddr1_buf < SPRITE_7_START) ? sprite_6_data1_out :
-      (SPRITE_7_START <= raddr1_buf && raddr1_buf < TILEMAP_START) ? sprite_7_data1_out :
-      (TILEMAP_START <= raddr1_buf && raddr1_buf < FRAMEBUFFER_START) ? tilemap_data1_out :
-      (FRAMEBUFFER_START <= raddr1_buf && raddr1_buf < FRAMEBUFFER_END) ? framebuffer_data1_out :
+      (SPRITE_7_START <= raddr1_buf && raddr1_buf < SPRITE_DATA_END) ? sprite_7_data1_out :
+      (TILEMAP_START <= raddr1_buf && raddr1_buf < TILEMAP_END) ? tilemap_data1_out :
                             raddr1_buf == SPRITE_0_X ? pack_sprite_coord(sprite_0_x, raddr1_buf[1:0]) :
                             raddr1_buf == SPRITE_0_Y ? pack_sprite_coord(sprite_0_y, raddr1_buf[1:0]) :
                             raddr1_buf == SPRITE_1_X ? pack_sprite_coord(sprite_1_x, raddr1_buf[1:0]) :
@@ -394,11 +430,20 @@ module mem(input clk, input clk_en,
                             raddr1_buf == SPRITE_6_Y ? pack_sprite_coord(sprite_6_y, raddr1_buf[1:0]) :
                             raddr1_buf == SPRITE_7_X ? pack_sprite_coord(sprite_7_x, raddr1_buf[1:0]) :
                             raddr1_buf == SPRITE_7_Y ? pack_sprite_coord(sprite_7_y, raddr1_buf[1:0]) :
+                            (SPRITE_SCALE_BASE <= raddr1_buf && raddr1_buf < SPRITE_SCALE_END) ?
+                              {24'b0, sprite_scale_regs[raddr1_buf[3:0]]} :
                             raddr1_buf == SCALE_REG ? {24'b0, scale_reg} :
                             raddr1_buf == HSCROLL_REG ? {16'b0, hscroll_reg} :
                             raddr1_buf == VSCROLL_REG ? {vscroll_reg, 16'b0} :
+                            raddr1_buf == PIXEL_SCALE_REG ? {24'b0, pixel_scale_reg} :
+                            raddr1_buf == PIXEL_HSCROLL_REG ? {16'b0, pixel_hscroll_reg} :
+                            raddr1_buf == PIXEL_VSCROLL_REG ? {pixel_vscroll_reg, 16'b0} :
+                            raddr1_buf == VGA_STATUS_REG ? 32'd0 :
+                            (VGA_FRAME_REG <= raddr1_buf && raddr1_buf < (VGA_FRAME_REG + 27'd4)) ? 32'd0 :
+                            (CLOCK_DIV_REG <= raddr1_buf && raddr1_buf < (CLOCK_DIV_REG + 27'd4)) ? clock_div_reg :
                             raddr1_buf == PS2_REG ? {16'b0, ps2_data_in} :
                             raddr1_buf == UART_RX_REG ? {uart_rx_data, uart_rx_data, uart_rx_data, uart_rx_data} :
+                            raddr1_buf < RAM_END ? ram_data1_out :
                             32'h0;
 
     wire pit_interrupt;
@@ -433,11 +478,11 @@ module mem(input clk, input clk_en,
     wire scroll_debug = ($test$plusargs("scroll_debug") != 0);
 
     always @(posedge clk) begin
-      display_framebuffer_out <= frame_buffer[display_frame_addr[12:2]];
+      display_framebuffer_out <= frame_buffer[display_frame_word_idx];
       display_tile_index <= display_frame_addr[1:0];
       display_pixel_x <= pixel_x;
       display_pixel_y <= pixel_y;
-      display_tilemap_out <= tile_map[pixel_idx[12:1]];
+      display_tilemap_out <= tile_map[display_tile_word_idx];
       pixel_index <= pixel_idx[0];
 
       display_sprite_0_out <= sprite_0_data[display_sprite_addr[9:1]];
@@ -485,16 +530,16 @@ module mem(input clk, input clk_en,
 
         ram_data0_out <= ram[raddr0[16:2]];
         ram_data1_out <= ram[raddr1[16:2]];
-        sprite_0_data1_out <= sprite_0_data[raddr1[10:2]];
-        sprite_1_data1_out <= sprite_1_data[raddr1[10:2]];
-        sprite_2_data1_out <= sprite_2_data[raddr1[10:2]];
-        sprite_3_data1_out <= sprite_3_data[raddr1[10:2]];
-        sprite_4_data1_out <= sprite_4_data[raddr1[10:2]];
-        sprite_5_data1_out <= sprite_5_data[raddr1[10:2]];
-        sprite_6_data1_out <= sprite_6_data[raddr1[10:2]];
-        sprite_7_data1_out <= sprite_7_data[raddr1[10:2]];
-        tilemap_data1_out <= tile_map[raddr1[13:2] - TILEMAP_START[13:2]];
-        framebuffer_data1_out <= frame_buffer[raddr1[12:2]];
+        sprite_0_data1_out <= sprite_0_data[sprite_word_idx_r];
+        sprite_1_data1_out <= sprite_1_data[sprite_word_idx_r];
+        sprite_2_data1_out <= sprite_2_data[sprite_word_idx_r];
+        sprite_3_data1_out <= sprite_3_data[sprite_word_idx_r];
+        sprite_4_data1_out <= sprite_4_data[sprite_word_idx_r];
+        sprite_5_data1_out <= sprite_5_data[sprite_word_idx_r];
+        sprite_6_data1_out <= sprite_6_data[sprite_word_idx_r];
+        sprite_7_data1_out <= sprite_7_data[sprite_word_idx_r];
+        tilemap_data1_out <= tile_map[tile_word_idx_r];
+        framebuffer_data1_out <= frame_buffer[frame_word_idx_r];
 
         sd_start_strobe <= 1'b0;
         if (sd_cmd_buffer_out_valid) begin
@@ -519,84 +564,98 @@ module mem(input clk, input clk_en,
         rdata0 <= data0_out;
         rdata1 <= data1_out;
 
-        if (waddr < PS2_REG) begin
+        if (waddr < RAM_END) begin
             if (wen[0]) ram[waddr[16:2]][7:0]   <= wdata[7:0];
             if (wen[1]) ram[waddr[16:2]][15:8]  <= wdata[15:8];
             if (wen[2]) ram[waddr[16:2]][23:16] <= wdata[23:16];
             if (wen[3]) ram[waddr[16:2]][31:24] <= wdata[31:24];
         end else if (SPRITE_0_START <= waddr && waddr < SPRITE_1_START) begin
-            if (wen[0]) sprite_0_data[waddr[10:2]][7:0]   <= wdata[7:0];
-            if (wen[1]) sprite_0_data[waddr[10:2]][15:8]  <= wdata[15:8];
-            if (wen[2]) sprite_0_data[waddr[10:2]][23:16] <= wdata[23:16];
-            if (wen[3]) sprite_0_data[waddr[10:2]][31:24] <= wdata[31:24];
+            if (wen[0]) sprite_0_data[sprite_word_idx_w][7:0]   <= wdata[7:0];
+            if (wen[1]) sprite_0_data[sprite_word_idx_w][15:8]  <= wdata[15:8];
+            if (wen[2]) sprite_0_data[sprite_word_idx_w][23:16] <= wdata[23:16];
+            if (wen[3]) sprite_0_data[sprite_word_idx_w][31:24] <= wdata[31:24];
         end else if (SPRITE_1_START <= waddr && waddr < SPRITE_2_START) begin
-            if (wen[0]) sprite_1_data[waddr[10:2]][7:0]   <= wdata[7:0];
-            if (wen[1]) sprite_1_data[waddr[10:2]][15:8]  <= wdata[15:8];
-            if (wen[2]) sprite_1_data[waddr[10:2]][23:16] <= wdata[23:16];
-            if (wen[3]) sprite_1_data[waddr[10:2]][31:24] <= wdata[31:24];
+            if (wen[0]) sprite_1_data[sprite_word_idx_w][7:0]   <= wdata[7:0];
+            if (wen[1]) sprite_1_data[sprite_word_idx_w][15:8]  <= wdata[15:8];
+            if (wen[2]) sprite_1_data[sprite_word_idx_w][23:16] <= wdata[23:16];
+            if (wen[3]) sprite_1_data[sprite_word_idx_w][31:24] <= wdata[31:24];
         end else if (SPRITE_2_START <= waddr && waddr < SPRITE_3_START) begin
-            if (wen[0]) sprite_2_data[waddr[10:2]][7:0]   <= wdata[7:0];
-            if (wen[1]) sprite_2_data[waddr[10:2]][15:8]  <= wdata[15:8];
-            if (wen[2]) sprite_2_data[waddr[10:2]][23:16] <= wdata[23:16];
-            if (wen[3]) sprite_2_data[waddr[10:2]][31:24] <= wdata[31:24];
+            if (wen[0]) sprite_2_data[sprite_word_idx_w][7:0]   <= wdata[7:0];
+            if (wen[1]) sprite_2_data[sprite_word_idx_w][15:8]  <= wdata[15:8];
+            if (wen[2]) sprite_2_data[sprite_word_idx_w][23:16] <= wdata[23:16];
+            if (wen[3]) sprite_2_data[sprite_word_idx_w][31:24] <= wdata[31:24];
         end else if (SPRITE_3_START <= waddr && waddr < SPRITE_4_START) begin
-            if (wen[0]) sprite_3_data[waddr[10:2]][7:0]   <= wdata[7:0];
-            if (wen[1]) sprite_3_data[waddr[10:2]][15:8]  <= wdata[15:8];
-            if (wen[2]) sprite_3_data[waddr[10:2]][23:16] <= wdata[23:16];
-            if (wen[3]) sprite_3_data[waddr[10:2]][31:24] <= wdata[31:24];
+            if (wen[0]) sprite_3_data[sprite_word_idx_w][7:0]   <= wdata[7:0];
+            if (wen[1]) sprite_3_data[sprite_word_idx_w][15:8]  <= wdata[15:8];
+            if (wen[2]) sprite_3_data[sprite_word_idx_w][23:16] <= wdata[23:16];
+            if (wen[3]) sprite_3_data[sprite_word_idx_w][31:24] <= wdata[31:24];
         end else if (SPRITE_4_START <= waddr && waddr < SPRITE_5_START) begin
-            if (wen[0]) sprite_4_data[waddr[10:2]][7:0]   <= wdata[7:0];
-            if (wen[1]) sprite_4_data[waddr[10:2]][15:8]  <= wdata[15:8];
-            if (wen[2]) sprite_4_data[waddr[10:2]][23:16] <= wdata[23:16];
-            if (wen[3]) sprite_4_data[waddr[10:2]][31:24] <= wdata[31:24];
+            if (wen[0]) sprite_4_data[sprite_word_idx_w][7:0]   <= wdata[7:0];
+            if (wen[1]) sprite_4_data[sprite_word_idx_w][15:8]  <= wdata[15:8];
+            if (wen[2]) sprite_4_data[sprite_word_idx_w][23:16] <= wdata[23:16];
+            if (wen[3]) sprite_4_data[sprite_word_idx_w][31:24] <= wdata[31:24];
         end else if (SPRITE_5_START <= waddr && waddr < SPRITE_6_START) begin
-            if (wen[0]) sprite_5_data[waddr[10:2]][7:0]   <= wdata[7:0];
-            if (wen[1]) sprite_5_data[waddr[10:2]][15:8]  <= wdata[15:8];
-            if (wen[2]) sprite_5_data[waddr[10:2]][23:16] <= wdata[23:16];
-            if (wen[3]) sprite_5_data[waddr[10:2]][31:24] <= wdata[31:24];
+            if (wen[0]) sprite_5_data[sprite_word_idx_w][7:0]   <= wdata[7:0];
+            if (wen[1]) sprite_5_data[sprite_word_idx_w][15:8]  <= wdata[15:8];
+            if (wen[2]) sprite_5_data[sprite_word_idx_w][23:16] <= wdata[23:16];
+            if (wen[3]) sprite_5_data[sprite_word_idx_w][31:24] <= wdata[31:24];
         end else if (SPRITE_6_START <= waddr && waddr < SPRITE_7_START) begin
-            if (wen[0]) sprite_6_data[waddr[10:2]][7:0]   <= wdata[7:0];
-            if (wen[1]) sprite_6_data[waddr[10:2]][15:8]  <= wdata[15:8];
-            if (wen[2]) sprite_6_data[waddr[10:2]][23:16] <= wdata[23:16];
-            if (wen[3]) sprite_6_data[waddr[10:2]][31:24] <= wdata[31:24];
-        end else if (SPRITE_7_START <= waddr && waddr < TILEMAP_START) begin
-            if (wen[0]) sprite_7_data[waddr[10:2]][7:0]   <= wdata[7:0];
-            if (wen[1]) sprite_7_data[waddr[10:2]][15:8]  <= wdata[15:8];
-            if (wen[2]) sprite_7_data[waddr[10:2]][23:16] <= wdata[23:16];
-            if (wen[3]) sprite_7_data[waddr[10:2]][31:24] <= wdata[31:24];
-        end else if (TILEMAP_START <= waddr && waddr < FRAMEBUFFER_START) begin
-            if (wen[0]) tile_map[waddr[13:2] - TILEMAP_START[13:2]][7:0]   <= wdata[7:0];
-            if (wen[1]) tile_map[waddr[13:2] - TILEMAP_START[13:2]][15:8]  <= wdata[15:8];
-            if (wen[2]) tile_map[waddr[13:2] - TILEMAP_START[13:2]][23:16] <= wdata[23:16];
-            if (wen[3]) tile_map[waddr[13:2] - TILEMAP_START[13:2]][31:24] <= wdata[31:24];
+            if (wen[0]) sprite_6_data[sprite_word_idx_w][7:0]   <= wdata[7:0];
+            if (wen[1]) sprite_6_data[sprite_word_idx_w][15:8]  <= wdata[15:8];
+            if (wen[2]) sprite_6_data[sprite_word_idx_w][23:16] <= wdata[23:16];
+            if (wen[3]) sprite_6_data[sprite_word_idx_w][31:24] <= wdata[31:24];
+        end else if (SPRITE_7_START <= waddr && waddr < SPRITE_DATA_END) begin
+            if (wen[0]) sprite_7_data[sprite_word_idx_w][7:0]   <= wdata[7:0];
+            if (wen[1]) sprite_7_data[sprite_word_idx_w][15:8]  <= wdata[15:8];
+            if (wen[2]) sprite_7_data[sprite_word_idx_w][23:16] <= wdata[23:16];
+            if (wen[3]) sprite_7_data[sprite_word_idx_w][31:24] <= wdata[31:24];
+        end else if (TILEMAP_START <= waddr && waddr < TILEMAP_END) begin
+            if (wen[0]) tile_map[tile_word_idx_w][7:0]   <= wdata[7:0];
+            if (wen[1]) tile_map[tile_word_idx_w][15:8]  <= wdata[15:8];
+            if (wen[2]) tile_map[tile_word_idx_w][23:16] <= wdata[23:16];
+            if (wen[3]) tile_map[tile_word_idx_w][31:24] <= wdata[31:24];
         end else if (FRAMEBUFFER_START <= waddr && waddr < FRAMEBUFFER_END) begin
-            if (wen[0]) frame_buffer[waddr[12:2]][7:0]   <= wdata[7:0];
-            if (wen[1]) frame_buffer[waddr[12:2]][15:8]  <= wdata[15:8];
-            if (wen[2]) frame_buffer[waddr[12:2]][23:16] <= wdata[23:16];
-            if (wen[3]) frame_buffer[waddr[12:2]][31:24] <= wdata[31:24];
+            if (wen[0]) frame_buffer[frame_word_idx_w][7:0]   <= wdata[7:0];
+            if (wen[1]) frame_buffer[frame_word_idx_w][15:8]  <= wdata[15:8];
+            if (wen[2]) frame_buffer[frame_word_idx_w][23:16] <= wdata[23:16];
+            if (wen[3]) frame_buffer[frame_word_idx_w][31:24] <= wdata[31:24];
         end
-        if (scroll_debug && (waddr[17:2] == HSCROLL_REG[17:2])) begin
+        if (scroll_debug && (waddr[26:2] == HSCROLL_REG[26:2])) begin
             $display("[scroll_debug] write scroll base=%h waddr=%h wdata=%h wen=%b", HSCROLL_REG, waddr, wdata, wen);
         end
-        scroll_word_base = {waddr[17:2], 2'b00};
+        scroll_word_base = {waddr[26:2], 2'b00};
         for (scroll_lane = 0; scroll_lane < 4; scroll_lane = scroll_lane + 1) begin
             if (wen[scroll_lane]) begin
                 case (scroll_lane)
                     0: begin scroll_byte_addr = scroll_word_base; scroll_byte_data = wdata[7:0]; end
-                    1: begin scroll_byte_addr = scroll_word_base + 18'd1; scroll_byte_data = wdata[15:8]; end
-                    2: begin scroll_byte_addr = scroll_word_base + 18'd2; scroll_byte_data = wdata[23:16]; end
-                    default: begin scroll_byte_addr = scroll_word_base + 18'd3; scroll_byte_data = wdata[31:24]; end
+                    1: begin scroll_byte_addr = scroll_word_base + 27'd1; scroll_byte_data = wdata[15:8]; end
+                    2: begin scroll_byte_addr = scroll_word_base + 27'd2; scroll_byte_data = wdata[23:16]; end
+                    default: begin scroll_byte_addr = scroll_word_base + 27'd3; scroll_byte_data = wdata[31:24]; end
                 endcase
                 if (scroll_byte_addr == SCALE_REG)
                     scale_reg <= scroll_byte_data;
                 else if (scroll_byte_addr == HSCROLL_REG)
                     hscroll_reg[7:0] <= scroll_byte_data;
-                else if (scroll_byte_addr == HSCROLL_REG + 18'd1)
+                else if (scroll_byte_addr == HSCROLL_REG + 27'd1)
                     hscroll_reg[15:8] <= scroll_byte_data;
                 else if (scroll_byte_addr == VSCROLL_REG)
                     vscroll_reg[7:0] <= scroll_byte_data;
-                else if (scroll_byte_addr == VSCROLL_REG + 18'd1)
+                else if (scroll_byte_addr == VSCROLL_REG + 27'd1)
                     vscroll_reg[15:8] <= scroll_byte_data;
+                else if (scroll_byte_addr == PIXEL_SCALE_REG)
+                    pixel_scale_reg <= scroll_byte_data;
+                else if (scroll_byte_addr == PIXEL_HSCROLL_REG)
+                    pixel_hscroll_reg[7:0] <= scroll_byte_data;
+                else if (scroll_byte_addr == PIXEL_HSCROLL_REG + 27'd1)
+                    pixel_hscroll_reg[15:8] <= scroll_byte_data;
+                else if (scroll_byte_addr == PIXEL_VSCROLL_REG)
+                    pixel_vscroll_reg[7:0] <= scroll_byte_data;
+                else if (scroll_byte_addr == PIXEL_VSCROLL_REG + 27'd1)
+                    pixel_vscroll_reg[15:8] <= scroll_byte_data;
+                else if (CLOCK_DIV_REG <= scroll_byte_addr && scroll_byte_addr < (CLOCK_DIV_REG + 27'd4))
+                    clock_div_reg[(scroll_byte_addr - CLOCK_DIV_REG) * 8 +: 8] <= scroll_byte_data;
+                else if (SPRITE_SCALE_BASE <= scroll_byte_addr && scroll_byte_addr < SPRITE_SCALE_END)
+                    sprite_scale_regs[scroll_byte_addr[3:0]] <= scroll_byte_data;
                 if (scroll_byte_addr == SD_START_REG) begin
                     sd_start_pending <= 1'b1;
                     sd_irq_pending <= 1'b0;
@@ -604,12 +663,12 @@ module mem(input clk, input clk_en,
                     sd_byte_offset = {6'b0, scroll_byte_addr[2:0]} - {6'b0, SD_CMD_BASE[2:0]};
                     sd_cmd_buffer[sd_byte_offset[2:0]] <= scroll_byte_data;
                 end else if (SD_DATA_BASE <= scroll_byte_addr && scroll_byte_addr <= SD_DATA_END) begin
-                    sd_byte_offset = scroll_byte_addr[8:0];
+                    sd_byte_offset = scroll_byte_addr[8:0] - SD_DATA_BASE[8:0];
                     sd_data_buffer[sd_byte_offset] <= scroll_byte_data;
                 end
             end
         end
-        if ((waddr[17:2] == UART_TX_REG[17:2]) && wen[waddr[1:0]]) begin
+        if ((waddr[26:2] == UART_TX_REG[26:2]) && wen[waddr[1:0]]) begin
             uart_tx_data <= select_lane_byte(wdata, waddr[1:0]);
         end
         if (waddr == SPRITE_0_X) begin

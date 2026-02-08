@@ -50,13 +50,13 @@ module dioptase(
     `endif
 
     // Memory
-    wire [17:0]mem_read0_addr;
+    wire [26:0]mem_read0_addr;
     wire [31:0]mem_read0_data;
-    wire [17:0]mem_read1_addr;
+    wire [26:0]mem_read1_addr;
     wire [31:0]mem_read1_data;
     wire [3:0]mem_write_en;
     wire mem_read_en;
-    wire [17:0]mem_write_addr;
+    wire [26:0]mem_write_addr;
     wire [31:0]mem_write_data;
 
     wire clk_en;

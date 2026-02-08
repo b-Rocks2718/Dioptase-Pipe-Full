@@ -6,7 +6,7 @@
 // - Apply GPR/CR forwarding and load-use hazard detection.
 // - Run ALU operations and branch resolution.
 // - Form memory requests (address, byte-lane write mask, store data).
-// - Track replay dedup so stale post-stall copies are converted to bubbles.
+// - Register execute outputs with stall-safe forwarding for dependent slots.
 //
 // Contracts:
 // - `stall` means decode must hold its current slot.
@@ -96,24 +96,7 @@ module execute(input clk, input clk_en, input halt,
     op2_out = 32'd0;
     replay_dedup_active = 1'b0;
     stall_prev = 1'b0;
-    last_opcode_sig = 5'd0;
-    last_slot_id_sig = 32'd0;
-    last_s1_sig = 5'd0;
-    last_s2_sig = 5'd0;
-    last_tgt1_sig = 5'd0;
-    last_tgt2_sig = 5'd0;
-    last_alu_op_sig = 5'd0;
-    last_branch_code_sig = 5'd0;
-    last_imm_sig = 32'd0;
-    last_is_load_sig = 1'b0;
-    last_is_store_sig = 1'b0;
-    last_is_branch_sig = 1'b0;
-    last_is_post_inc_sig = 1'b0;
-    last_priv_type_sig = 5'd0;
-    last_crmov_mode_sig = 2'd0;
-    last_is_atomic_sig = 1'b0;
-    last_is_fetch_add_atomic_sig = 1'b0;
-    last_atomic_step_sig = 2'd0;
+    last_decode_sig = {REPLAY_SIG_W{1'b0}};
     atomic_base_buf = 32'd0;
     atomic_data_buf = 32'd0;
     atomic_fadd_sum_buf = 32'd0;
@@ -133,71 +116,90 @@ module execute(input clk, input clk_en, input halt,
   reg tgts_cr_buf_b;
   reg replay_dedup_active;
   reg stall_prev;
-  reg [4:0]last_opcode_sig;
-  reg [31:0]last_slot_id_sig;
-  reg [4:0]last_s1_sig;
-  reg [4:0]last_s2_sig;
-  reg [4:0]last_tgt1_sig;
-  reg [4:0]last_tgt2_sig;
-  reg [4:0]last_alu_op_sig;
-  reg [4:0]last_branch_code_sig;
-  reg [31:0]last_imm_sig;
-  reg last_is_load_sig;
-  reg last_is_store_sig;
-  reg last_is_branch_sig;
-  reg last_is_post_inc_sig;
-  reg [4:0]last_priv_type_sig;
-  reg [1:0]last_crmov_mode_sig;
-  reg last_is_atomic_sig;
-  reg last_is_fetch_add_atomic_sig;
-  reg [1:0]last_atomic_step_sig;
+  // Packed signature for duplicate filtering across stall-release windows. This
+  // replaces a large field-by-field
+  // register set while preserving the same behavior.
+  localparam REPLAY_SIG_W = 114;
+  reg [REPLAY_SIG_W-1:0]last_decode_sig;
   reg [31:0]atomic_base_buf;
   reg [31:0]atomic_data_buf;
   reg [31:0]atomic_fadd_sum_buf;
   reg stall_hist_1;
   reg stall_hist_2;
   // Keep forwarding buffers valid for up to two cycles after a stall clears,
-  // so replayed slots can still see the most recent writeback values.
+  // so repeated slots can still see the most recent writeback values.
   wire stall_buf_valid = stall || stall_hist_1 || stall_hist_2;
 
   wire is_mem_w = (5'd3 <= opcode && opcode <= 5'd5);
   wire is_mem_d = (5'd6 <= opcode && opcode <= 5'd8);
   wire is_mem_b = (5'd9 <= opcode && opcode <= 5'd11);
+  wire s1_nonzero = (s_1 != 5'd0);
+  wire s2_nonzero = (s_2 != 5'd0);
 
   // Forwarding priority is newest-to-oldest pipeline producer, then local
   // stall history buffers, then regfile output.
+  wire ex1_hit_s1 = s1_nonzero && (tgt_out_1 == s_1);
+  wire ex2_hit_s1 = s1_nonzero && (tgt_out_2 == s_1);
+  wire tlbm1_hit_s1 = s1_nonzero && (tlb_mem_tgt_1 == s_1);
+  wire tlbm2_hit_s1 = s1_nonzero && (tlb_mem_tgt_2 == s_1);
+  wire mema1_hit_s1 = s1_nonzero && (mem_a_tgt_1 == s_1);
+  wire mema2_hit_s1 = s1_nonzero && (mem_a_tgt_2 == s_1);
+  wire memb1_hit_s1 = s1_nonzero && (mem_b_tgt_1 == s_1);
+  wire memb2_hit_s1 = s1_nonzero && (mem_b_tgt_2 == s_1);
+  wire wb1_hit_s1 = s1_nonzero && (wb_tgt_1 == s_1);
+  wire wb2_hit_s1 = s1_nonzero && (wb_tgt_2 == s_1);
+  wire buf_a1_hit_s1 = stall_buf_valid && s1_nonzero && (reg_tgt_buf_a_1 == s_1);
+  wire buf_a2_hit_s1 = stall_buf_valid && s1_nonzero && (reg_tgt_buf_a_2 == s_1);
+  wire buf_b1_hit_s1 = stall_buf_valid && s1_nonzero && (reg_tgt_buf_b_1 == s_1);
+  wire buf_b2_hit_s1 = stall_buf_valid && s1_nonzero && (reg_tgt_buf_b_2 == s_1);
+
+  wire ex1_hit_s2 = s2_nonzero && (tgt_out_1 == s_2);
+  wire ex2_hit_s2 = s2_nonzero && (tgt_out_2 == s_2);
+  wire tlbm1_hit_s2 = s2_nonzero && (tlb_mem_tgt_1 == s_2);
+  wire tlbm2_hit_s2 = s2_nonzero && (tlb_mem_tgt_2 == s_2);
+  wire mema1_hit_s2 = s2_nonzero && (mem_a_tgt_1 == s_2);
+  wire mema2_hit_s2 = s2_nonzero && (mem_a_tgt_2 == s_2);
+  wire memb1_hit_s2 = s2_nonzero && (mem_b_tgt_1 == s_2);
+  wire memb2_hit_s2 = s2_nonzero && (mem_b_tgt_2 == s_2);
+  wire wb1_hit_s2 = s2_nonzero && (wb_tgt_1 == s_2);
+  wire wb2_hit_s2 = s2_nonzero && (wb_tgt_2 == s_2);
+  wire buf_a1_hit_s2 = stall_buf_valid && s2_nonzero && (reg_tgt_buf_a_1 == s_2);
+  wire buf_a2_hit_s2 = stall_buf_valid && s2_nonzero && (reg_tgt_buf_a_2 == s_2);
+  wire buf_b1_hit_s2 = stall_buf_valid && s2_nonzero && (reg_tgt_buf_b_1 == s_2);
+  wire buf_b2_hit_s2 = stall_buf_valid && s2_nonzero && (reg_tgt_buf_b_2 == s_2);
+
   assign op1 = 
-    (tgt_out_1 == s_1 && s_1 != 5'b0) ? result_1 :
-    (tgt_out_2 == s_1 && s_1 != 5'b0) ? result_2 :
-    (tlb_mem_tgt_1 == s_1 && s_1 != 5'b0) ? tlb_mem_result_out_1 :
-    (tlb_mem_tgt_2 == s_1 && s_1 != 5'b0) ? tlb_mem_result_out_2 :
-    (mem_a_tgt_1 == s_1 && s_1 != 5'b0) ? mem_a_result_out_1 : 
-    (mem_a_tgt_2 == s_1 && s_1 != 5'b0) ? mem_a_result_out_2 : 
-    (mem_b_tgt_1 == s_1 && s_1 != 5'b0) ? mem_b_result_out_1 :
-    (mem_b_tgt_2 == s_1 && s_1 != 5'b0) ? mem_b_result_out_2 :
-    (wb_tgt_1 == s_1 && s_1 != 5'b0) ? wb_result_out_1 :
-    (wb_tgt_2 == s_1 && s_1 != 5'b0) ? wb_result_out_2 :
-    (stall_buf_valid && reg_tgt_buf_a_1 == s_1 && s_1 != 5'b0) ? reg_data_buf_a_1 :
-    (stall_buf_valid && reg_tgt_buf_a_2 == s_1 && s_1 != 5'b0) ? reg_data_buf_a_2 :
-    (stall_buf_valid && reg_tgt_buf_b_1 == s_1 && s_1 != 5'b0) ? reg_data_buf_b_1 :
-    (stall_buf_valid && reg_tgt_buf_b_2 == s_1 && s_1 != 5'b0) ? reg_data_buf_b_2 :
+    ex1_hit_s1 ? result_1 :
+    ex2_hit_s1 ? result_2 :
+    tlbm1_hit_s1 ? tlb_mem_result_out_1 :
+    tlbm2_hit_s1 ? tlb_mem_result_out_2 :
+    mema1_hit_s1 ? mem_a_result_out_1 : 
+    mema2_hit_s1 ? mem_a_result_out_2 : 
+    memb1_hit_s1 ? mem_b_result_out_1 :
+    memb2_hit_s1 ? mem_b_result_out_2 :
+    wb1_hit_s1 ? wb_result_out_1 :
+    wb2_hit_s1 ? wb_result_out_2 :
+    buf_a1_hit_s1 ? reg_data_buf_a_1 :
+    buf_a2_hit_s1 ? reg_data_buf_a_2 :
+    buf_b1_hit_s1 ? reg_data_buf_b_1 :
+    buf_b2_hit_s1 ? reg_data_buf_b_2 :
     reg_out_1;
 
   assign op2 = 
-    (tgt_out_1 == s_2 && s_2 != 5'b0) ? result_1 :
-    (tgt_out_2 == s_2 && s_2 != 5'b0) ? result_2 :
-    (tlb_mem_tgt_1 == s_2 && s_2 != 5'b0) ? tlb_mem_result_out_1 :
-    (tlb_mem_tgt_2 == s_2 && s_2 != 5'b0) ? tlb_mem_result_out_2 :
-    (mem_a_tgt_1 == s_2 && s_2 != 5'b0) ? mem_a_result_out_1 : 
-    (mem_a_tgt_2 == s_2 && s_2 != 5'b0) ? mem_a_result_out_2 : 
-    (mem_b_tgt_1 == s_2 && s_2 != 5'b0) ? mem_b_result_out_1 :
-    (mem_b_tgt_2 == s_2 && s_2 != 5'b0) ? mem_b_result_out_2 :
-    (wb_tgt_1 == s_2 && s_2 != 5'b0) ? wb_result_out_1 :
-    (wb_tgt_2 == s_2 && s_2 != 5'b0) ? wb_result_out_2 :
-    (stall_buf_valid && reg_tgt_buf_a_1 == s_2 && s_2 != 5'b0) ? reg_data_buf_a_1 :
-    (stall_buf_valid && reg_tgt_buf_a_2 == s_2 && s_2 != 5'b0) ? reg_data_buf_a_2 :
-    (stall_buf_valid && reg_tgt_buf_b_1 == s_2 && s_2 != 5'b0) ? reg_data_buf_b_1 :
-    (stall_buf_valid && reg_tgt_buf_b_2 == s_2 && s_2 != 5'b0) ? reg_data_buf_b_2 :
+    ex1_hit_s2 ? result_1 :
+    ex2_hit_s2 ? result_2 :
+    tlbm1_hit_s2 ? tlb_mem_result_out_1 :
+    tlbm2_hit_s2 ? tlb_mem_result_out_2 :
+    mema1_hit_s2 ? mem_a_result_out_1 : 
+    mema2_hit_s2 ? mem_a_result_out_2 : 
+    memb1_hit_s2 ? mem_b_result_out_1 :
+    memb2_hit_s2 ? mem_b_result_out_2 :
+    wb1_hit_s2 ? wb_result_out_1 :
+    wb2_hit_s2 ? wb_result_out_2 :
+    buf_a1_hit_s2 ? reg_data_buf_a_1 :
+    buf_a2_hit_s2 ? reg_data_buf_a_2 :
+    buf_b1_hit_s2 ? reg_data_buf_b_1 :
+    buf_b2_hit_s2 ? reg_data_buf_b_2 :
     reg_out_2;
 
   // Atomic cracked micro-ops use a snapshot of forwarded operands from the
@@ -218,18 +220,26 @@ module execute(input clk, input clk_en, input halt,
   wire [4:0]dep_s2 = is_crmov ? 5'd0 : s_2;
   wire decode_live = !bubble_in && !exc_in_wb && !rfe_in_wb;
 
-  wire ex_dep_hit =
-    (((tgt_out_1 == dep_s1 || tgt_out_1 == dep_s2) && tgt_out_1 != 5'd0) ||
-     ((tgt_out_2 == dep_s1 || tgt_out_2 == dep_s2) && tgt_out_2 != 5'd0));
-  wire tlb_mem_dep_hit =
-    (((tlb_mem_tgt_1 == dep_s1 || tlb_mem_tgt_1 == dep_s2) && tlb_mem_tgt_1 != 5'd0) ||
-     ((tlb_mem_tgt_2 == dep_s1 || tlb_mem_tgt_2 == dep_s2) && tlb_mem_tgt_2 != 5'd0));
-  wire mem_a_dep_hit =
-    (((mem_a_tgt_1 == dep_s1 || mem_a_tgt_1 == dep_s2) && mem_a_tgt_1 != 5'd0) ||
-     ((mem_a_tgt_2 == dep_s1 || mem_a_tgt_2 == dep_s2) && mem_a_tgt_2 != 5'd0));
-  wire mem_b_dep_hit =
-    (((mem_b_tgt_1 == dep_s1 || mem_b_tgt_1 == dep_s2) && mem_b_tgt_1 != 5'd0) ||
-     ((mem_b_tgt_2 == dep_s1 || mem_b_tgt_2 == dep_s2) && mem_b_tgt_2 != 5'd0));
+  wire ex1_dep_hit = (tgt_out_1 != 5'd0) &&
+    ((tgt_out_1 == dep_s1) || (tgt_out_1 == dep_s2));
+  wire ex2_dep_hit = (tgt_out_2 != 5'd0) &&
+    ((tgt_out_2 == dep_s1) || (tgt_out_2 == dep_s2));
+  wire tlbm1_dep_hit = (tlb_mem_tgt_1 != 5'd0) &&
+    ((tlb_mem_tgt_1 == dep_s1) || (tlb_mem_tgt_1 == dep_s2));
+  wire tlbm2_dep_hit = (tlb_mem_tgt_2 != 5'd0) &&
+    ((tlb_mem_tgt_2 == dep_s1) || (tlb_mem_tgt_2 == dep_s2));
+  wire mema1_dep_hit = (mem_a_tgt_1 != 5'd0) &&
+    ((mem_a_tgt_1 == dep_s1) || (mem_a_tgt_1 == dep_s2));
+  wire mema2_dep_hit = (mem_a_tgt_2 != 5'd0) &&
+    ((mem_a_tgt_2 == dep_s1) || (mem_a_tgt_2 == dep_s2));
+  wire memb1_dep_hit = (mem_b_tgt_1 != 5'd0) &&
+    ((mem_b_tgt_1 == dep_s1) || (mem_b_tgt_1 == dep_s2));
+  wire memb2_dep_hit = (mem_b_tgt_2 != 5'd0) &&
+    ((mem_b_tgt_2 == dep_s1) || (mem_b_tgt_2 == dep_s2));
+  wire ex_dep_hit = ex1_dep_hit || ex2_dep_hit;
+  wire tlb_mem_dep_hit = tlbm1_dep_hit || tlbm2_dep_hit;
+  wire mem_a_dep_hit = mema1_dep_hit || mema2_dep_hit;
+  wire mem_b_dep_hit = memb1_dep_hit || memb2_dep_hit;
 
   // Load-use stall checks apply only to true GPR dependencies.
   // CR dependencies are handled by dedicated control-register forwarding.
@@ -267,31 +277,18 @@ module execute(input clk, input clk_en, input halt,
     reg_out_cr;
 
   wire opening_after_stall = stall_prev && !stall && !bubble_in && !exc_in_wb && !rfe_in_wb;
-  // Replay dedup:
-  // - enabled only after a stall opens, then cleared once decode advances.
-  // - slot id is the primary identity key; payload fields remain as safety
-  //   backstop in case an upstream bug mislabels slot ids.
-  wire same_replay_slot =
-    (slot_id == last_slot_id_sig) &&
-    (opcode == last_opcode_sig) &&
-    (s_1 == last_s1_sig) &&
-    (s_2 == last_s2_sig) &&
-    (tgt_1 == last_tgt1_sig) &&
-    (tgt_2 == last_tgt2_sig) &&
-    (alu_op == last_alu_op_sig) &&
-    (branch_code == last_branch_code_sig) &&
-    (imm == last_imm_sig) &&
-    (is_load == last_is_load_sig) &&
-    (is_store == last_is_store_sig) &&
-    (is_branch == last_is_branch_sig) &&
-    (is_post_inc == last_is_post_inc_sig) &&
-    (priv_type == last_priv_type_sig) &&
-    (crmov_mode_type == last_crmov_mode_sig) &&
-    (is_atomic == last_is_atomic_sig) &&
-    (is_fetch_add_atomic == last_is_fetch_add_atomic_sig) &&
-    (atomic_step == last_atomic_step_sig);
+  // Duplicate identity includes both payload and slot tag so stale copies are
+  // dropped while true new work that happens to share opcode/immediates still retires.
+  wire [REPLAY_SIG_W-1:0]decode_sig = {
+    slot_id, opcode, s_1, s_2, tgt_1, tgt_2, alu_op, branch_code,
+    imm, is_load, is_store, is_branch, is_post_inc, priv_type, crmov_mode_type,
+    is_atomic, is_fetch_add_atomic, atomic_step
+  };
+  // When a load-use stall opens, stale decode copies can reappear in execute.
+  // Drop repeated decode signatures until decode advances to new work.
   wire exec_dup = replay_dedup_active && !opening_after_stall &&
-    !bubble_in && !stall && !exc_in_wb && !rfe_in_wb && same_replay_slot;
+    !bubble_in && !stall && !exc_in_wb && !rfe_in_wb &&
+    (decode_sig == last_decode_sig);
 
   // ISA subtract-immediate uses immediate as lhs and register as rhs.
   // This mux keeps ALU op encoding unchanged while honoring that semantic.
@@ -401,24 +398,7 @@ always @(posedge clk) begin
       atomic_fadd_sum_buf <= 32'd0;
       replay_dedup_active <= 1'b0;
       stall_prev <= 1'b0;
-      last_opcode_sig <= 5'd0;
-      last_slot_id_sig <= 32'd0;
-      last_s1_sig <= 5'd0;
-      last_s2_sig <= 5'd0;
-      last_tgt1_sig <= 5'd0;
-      last_tgt2_sig <= 5'd0;
-      last_alu_op_sig <= 5'd0;
-      last_branch_code_sig <= 5'd0;
-      last_imm_sig <= 32'd0;
-      last_is_load_sig <= 1'b0;
-      last_is_store_sig <= 1'b0;
-      last_is_branch_sig <= 1'b0;
-      last_is_post_inc_sig <= 1'b0;
-      last_priv_type_sig <= 5'd0;
-      last_crmov_mode_sig <= 2'd0;
-      last_is_atomic_sig <= 1'b0;
-      last_is_fetch_add_atomic_sig <= 1'b0;
-      last_atomic_step_sig <= 2'd0;
+      last_decode_sig <= {REPLAY_SIG_W{1'b0}};
       stall_hist_1 <= 1'b0;
       stall_hist_2 <= 1'b0;
     end else begin
@@ -484,36 +464,18 @@ always @(posedge clk) begin
         replay_dedup_active <= 1'b0;
       end else if (opening_after_stall) begin
         replay_dedup_active <= 1'b1;
-      end else if (replay_dedup_active && !stall && !bubble_in && !same_replay_slot) begin
+      end else if (replay_dedup_active && !stall && !bubble_in &&
+          (decode_sig != last_decode_sig)) begin
         replay_dedup_active <= 1'b0;
       end
-
       if (!stall && !bubble_in && !exc_in_wb && !rfe_in_wb && !exec_dup) begin
-        last_opcode_sig <= opcode;
-        last_slot_id_sig <= slot_id;
-        last_s1_sig <= s_1;
-        last_s2_sig <= s_2;
-        last_tgt1_sig <= tgt_1;
-        last_tgt2_sig <= tgt_2;
-        last_alu_op_sig <= alu_op;
-        last_branch_code_sig <= branch_code;
-        last_imm_sig <= imm;
-        last_is_load_sig <= is_load;
-        last_is_store_sig <= is_store;
-        last_is_branch_sig <= is_branch;
-        last_is_post_inc_sig <= is_post_inc;
-        last_priv_type_sig <= priv_type;
-        last_crmov_mode_sig <= crmov_mode_type;
-        last_is_atomic_sig <= is_atomic;
-        last_is_fetch_add_atomic_sig <= is_fetch_add_atomic;
-        last_atomic_step_sig <= atomic_step;
+        last_decode_sig <= decode_sig;
       end
-
 `ifdef SIMULATION
       if ($test$plusargs("exec_debug")) begin
-        $display("[exec] sid=%0d op=%0d pc=%h stall=%b open=%b rda=%b same=%b dup=%b bub=%b exwb=%b rfe=%b",
+        $display("[exec] sid=%0d op=%0d pc=%h stall=%b open=%b dedup=%b dup=%b bub=%b exwb=%b rfe=%b",
           slot_id, opcode, decode_pc_out, stall, opening_after_stall, replay_dedup_active,
-          same_replay_slot, exec_dup, bubble_in, exc_in_wb, rfe_in_wb);
+          exec_dup, bubble_in, exc_in_wb, rfe_in_wb);
       end
 `endif
 

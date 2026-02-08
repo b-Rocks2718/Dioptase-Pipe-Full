@@ -6,12 +6,12 @@
 // - Parse ISA fields from fetched instruction words.
 // - Read GPR/CR operands and produce control metadata for execute.
 // - Crack atomic fetch-add/swap instructions into decode-local micro-ops.
-// - Keep PC/instruction/slot alignment stable across replay stalls.
+// - Keep PC/instruction/slot alignment stable across stall windows.
 //
 // Contracts:
 // - `decode_stall` means decode owns frontend progress (atomic crack in flight).
-// - `slot_id_out` identifies the logical fetched slot; replay copies reuse the
-//   prior slot id so execute can deduplicate stale replays.
+// - `slot_id_out` identifies the logical fetched slot; duplicate frontend
+//   copies are aliased to the prior live slot id so execute can deduplicate.
 // - Exceptions generated here keep bubble cleared (live faulting slot).
 module decode(input clk, input clk_en,
     input flush, input halt,
@@ -62,10 +62,11 @@ module decode(input clk, input clk_en,
   reg atomic_drain;
   reg [31:0]atomic_drain_instr;
   reg [31:0]atomic_drain_pc;
+  reg [31:0]atomic_drain_slot_id;
 
-  // When execute/decode are stalled, replay from local buffer so this stage
-  // decodes a stable instruction/PC pair until the hold releases.
-  wire use_buf = was_stall || was_decode_stall;
+  // Frontend queue provides stable packet ordering across stalls, so decode no
+  // longer needs local buffering for execute/decode stalls.
+  wire use_buf = 1'b0;
   wire [31:0]front_instr;
   wire [31:0]front_pc;
   wire [31:0]front_slot_id;
@@ -91,39 +92,42 @@ module decode(input clk, input clk_en,
   assign slot_id_decode_in = atomic_active ? atomic_slot_id : front_slot_id_aligned;
   assign bubble_decode_in = atomic_active ? 1'b0 : front_bubble;
   assign exc_decode_in = atomic_active ? 8'h0 : front_exc;
-  // One-cycle PC/instruction catch-up on stall replay. Guard with `was_was_stall`
-  // so this only applies on the first live cycle after replay.
-  wire replay_pc_fix = !atomic_active && was_was_stall && !use_buf && !stall &&
+  // Duplicate phases around stall release:
+  // 1) realign cycle: frontend metadata and memory output can be one word apart.
+  // 2) follow-up cycle: memory can present one extra duplicate after realign.
+  // 3) steady duplicate: repeated {pc,instr} pairs on adjacent cycles.
+  wire replay_realign_cycle = !atomic_active && was_was_stall && !use_buf && !stall &&
     (pc_in == pc_buf) && (mem_out_0 != instr_buf) && !bubble_in;
-  reg replay_pc_fix_d1;
-  reg replay_pc_fix_d2;
+  reg replay_realign_d1;
+  reg replay_realign_d2;
   reg prev_live_valid;
   reg [31:0]prev_live_instr;
   reg [31:0]prev_live_pc;
   reg [31:0]prev_live_slot_id;
-  // On replay catch-up, stale ALU words can briefly reappear for the same PC.
+  // On stall catch-up, stale ALU words can briefly reappear for the same PC.
   // Drop that single stale decode so dependent instructions observe the
   // architecturally correct stream.
-  wire replay_fix_drop = replay_pc_fix &&
+  wire replay_realign_drop = replay_realign_cycle &&
     ((opcode == 5'd1) || (opcode == 5'd0));
-  wire replay_dup_match = !atomic_active && !stall && !use_buf && !bubble_in &&
+  wire replay_followup_match = !atomic_active && !stall && !use_buf && !bubble_in &&
     (mem_out_0 == prev_live_instr) && (pc_in == prev_live_pc + 32'd4);
   // After the catch-up cycle, instruction memory can still present one extra
   // duplicate word while PC has already advanced. Drop that duplicate as bubble.
-  wire replay_dup_drop = replay_dup_match && replay_pc_fix_d2;
-  // Generic frontend replay duplicate filter: if the same live {pc,instr}
+  wire replay_followup_drop = replay_followup_match && replay_realign_d2;
+  // Generic frontend duplicate filter: if the same live {pc,instr}
   // appears on consecutive cycles, execute it once then bubble repeats.
-  wire live_consecutive_dup = !atomic_active && !stall && !use_buf && !bubble_in &&
+  wire replay_consecutive_drop = !atomic_active && !stall && !use_buf && !bubble_in &&
     prev_live_valid && (pc_in == prev_live_pc) && (mem_out_0 == prev_live_instr);
-  wire replay_alias_window = use_buf || was_stall || replay_pc_fix ||
-    replay_pc_fix_d1 || replay_pc_fix_d2 || replay_dup_match;
-  // Keep stale replay copies attached to the prior live slot id so execute can
+  wire replay_slot_alias_window = use_buf || was_stall || replay_realign_cycle ||
+    replay_realign_d1 || replay_realign_d2 || replay_followup_match;
+  // Keep stale duplicate copies attached to the prior live slot id so execute can
   // deduplicate by slot identity instead of full payload matching.
   wire replay_slot_alias = !atomic_active && !stall && !bubble_decode_in &&
-    replay_alias_window &&
+    replay_slot_alias_window &&
     prev_live_valid && (instr_in == prev_live_instr) &&
     ((pc_decode_in == prev_live_pc) || (pc_decode_in == (prev_live_pc + 32'd4)));
   wire [31:0]front_slot_id_aligned = replay_slot_alias ? prev_live_slot_id : front_slot_id;
+  wire replay_front_drop = replay_realign_drop || replay_followup_drop || replay_consecutive_drop;
 
   wire [4:0]opcode_raw = instr_in[31:27];
   wire [4:0]front_opcode = front_instr[31:27];
@@ -252,14 +256,15 @@ module decode(input clk, input clk_en,
   // - fetch-add: load -> add -> store
   // - swap: load -> store
   // A frontend slot is not eligible to start a crack sequence if it is already
-  // being discarded by redirect/replay filters.
-  wire front_kill = flush || front_bubble || replay_fix_drop || replay_dup_drop || live_consecutive_dup;
+  // being discarded by redirect/duplicate filters.
+  wire front_kill = flush || front_bubble || replay_front_drop;
   wire start_atomic = !atomic_active && !atomic_drain && !stall && !front_kill &&
     (front_is_fetch_add || front_is_swap);
   wire atomic_inflight = atomic_active || start_atomic;
   wire atomic_fetch_add_mode = atomic_active ? atomic_is_fetch_add : front_is_fetch_add;
   wire [1:0]atomic_step_decode = atomic_active ? atomic_step : 2'd0;
   wire atomic_drain_dup = atomic_drain && !stall && !front_bubble &&
+    (front_slot_id == atomic_drain_slot_id) &&
     (front_pc == atomic_drain_pc) && (front_instr == atomic_drain_instr);
 
   wire is_swap_abs = (opcode == 5'd19);
@@ -403,13 +408,14 @@ module decode(input clk, input clk_en,
     atomic_drain = 1'b0;
     atomic_drain_instr = 32'd0;
     atomic_drain_pc = 32'd0;
+    atomic_drain_slot_id = 32'd0;
     instr_buf = 32'd0;
     pc_buf = 32'd0;
     slot_id_buf = 32'd0;
     bubble_buf = 1'b1;
     exc_buf = 8'd0;
-    replay_pc_fix_d1 = 1'b0;
-    replay_pc_fix_d2 = 1'b0;
+    replay_realign_d1 = 1'b0;
+    replay_realign_d2 = 1'b0;
     prev_live_valid = 1'b0;
     prev_live_instr = 32'd0;
     prev_live_pc = 32'd0;
@@ -440,10 +446,10 @@ module decode(input clk, input clk_en,
             ) : 8'h0;
 
   // Exception priority at decode boundary:
-  // 1) replay-drop clears exceptions (slot is invalid anyway)
+  // 1) duplicate-drop clears exceptions (slot is invalid anyway)
   // 2) interrupt/tlb/priv exceptions keep slot live (bubble=0) for WB trap flow
   wire decode_has_exc = (interrupt_exc != 8'h0) || (exc_decode_in != 8'h0) || (exc_priv_instr != 8'h0);
-  wire replay_drop = replay_fix_drop || replay_dup_drop || live_consecutive_dup || atomic_drain_dup;
+  wire replay_drop = replay_front_drop || atomic_drain_dup;
   // IPI is intentionally squashed as a no-op in kernel mode for now.
   wire ipi_noop_kill = is_ipi && kmode;
   wire decode_kill = flush || bubble_decode_in || replay_drop || ipi_noop_kill;
@@ -497,7 +503,7 @@ module decode(input clk, input clk_en,
             atomic_drain <= 1'b0;
           end else if (start_atomic) begin
             // Latch one atomic instruction and crack it locally in decode.
-            // This decouples micro-op sequencing from frontend replay timing.
+            // This decouples micro-op sequencing from frontend queue timing.
             atomic_active <= 1'b1;
             atomic_is_fetch_add <= front_is_fetch_add;
             atomic_step <= 2'd1;
@@ -513,6 +519,7 @@ module decode(input clk, input clk_en,
               atomic_drain <= 1'b1;
               atomic_drain_instr <= atomic_instr;
               atomic_drain_pc <= atomic_pc;
+              atomic_drain_slot_id <= atomic_slot_id;
             end else begin
               atomic_step <= atomic_step + 2'd1;
             end
@@ -528,14 +535,14 @@ module decode(input clk, input clk_en,
                     : (exc_decode_in != 0) ? exc_decode_in : exc_priv_instr;
         end
 
-        // Preserve buffered fetch outputs across execute replay and
-        // decode-local crack stalls. Keep the previous execute-stall behavior
+        // Preserve buffered fetch outputs across execute-side duplicate windows
+        // and decode-local crack stalls. Keep execute-stall hold behavior
         // (hold while `was_stall`), and only add decode-stall hold.
         if (!was_stall && !(decode_stall && was_decode_stall)) begin
           instr_buf <= mem_out_0;
           // On stall entry, memory can already be one word ahead while PC
           // metadata still points at the prior word. Bias buffered PC forward
-          // by one instruction in that specific case so replay keeps pairs aligned.
+          // by one instruction in that specific case so packet pairs stay aligned.
           pc_buf <= (stall && prev_live_valid &&
             (pc_in == prev_live_pc) && (mem_out_0 != prev_live_instr)) ?
             (pc_in + 32'd4) : pc_in;
@@ -551,8 +558,8 @@ module decode(input clk, input clk_en,
           prev_live_pc <= pc_decode_in;
           prev_live_slot_id <= slot_id_decode_in;
         end
-        replay_pc_fix_d1 <= replay_pc_fix;
-        replay_pc_fix_d2 <= replay_pc_fix_d1;
+        replay_realign_d1 <= replay_realign_cycle;
+        replay_realign_d2 <= replay_realign_d1;
         was_stall <= stall;
         was_was_stall <= was_stall;
         was_decode_stall <= decode_stall;
@@ -560,8 +567,8 @@ module decode(input clk, input clk_en,
         if ($test$plusargs("decode_debug")) begin
           $display("[decode] pc_in=%h pc_dec=%h sid_in=%0d sid_dec=%0d use_buf=%b stall=%b dstall=%b b_in=%b b_dec=%b op=%0d repfix=%b repdup=%b ldup=%b asid=%b kill=%b",
             pc_in, pc_decode_in, slot_id_in, slot_id_decode_in, use_buf, stall, decode_stall,
-            bubble_in, bubble_decode_in, opcode, replay_fix_drop, replay_dup_drop,
-            live_consecutive_dup, replay_slot_alias, decode_slot_kill);
+            bubble_in, bubble_decode_in, opcode, replay_realign_drop, replay_followup_drop,
+            replay_consecutive_drop, replay_slot_alias, decode_slot_kill);
         end
 `endif
 

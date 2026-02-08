@@ -37,7 +37,7 @@ The core uses a 9-stage in-order pipeline:
 Stage responsibilities:
 
 - `tlb_fetch`: frontend PC generation, redirect handling (branch/interrupt/rfe),
-  and replay address generation on backend stalls.
+  and issue-stop handling on backend stalls.
 - `fetch_a/fetch_b`: align fetched instruction metadata with memory latency.
 - `decode`: instruction parse, immediate generation, regfile/creg reads,
   exception decode, and atomic cracking.
@@ -50,17 +50,40 @@ Stage responsibilities:
 - `writeback`: lane masking for subword loads, final register writes, and
   control events (exception/rfe/rfi/halt/sleep).
 
-## Frontend Replay And Slot IDs
+## Frontend Queue And Duplicate Prevention
 
-The full frontend can replay older fetch addresses while execute is stalled.
-To avoid executing stale replay copies as new work:
+The frontend uses a decode-boundary packet queue. Fetch stages produce aligned
+packets:
 
-- `tlb_fetch` emits `slot_id` alongside PC.
-- `decode` keeps replayed duplicates mapped to the same logical slot id.
-- `execute` deduplicates stale copies using slot id + payload signature.
+- `{instr, pc, slot_id, exc, bubble}`
 
-This keeps architectural behavior stable even when fetch/PC and memory return
-timing temporarily diverge during replay windows.
+and `cpu.v` enqueues them before decode consumes them.
+
+### Why this is needed
+
+There are multiple registered stages between fetch issue and decode consume
+(`tlb_fetch -> fetch_a -> fetch_b -> decode`). When execute/decode stalls,
+instruction returns can still arrive for already-issued requests. The queue
+keeps these returns ordered and paired with their PC/slot metadata.
+
+The queue keeps ordering and pairing explicit:
+
+- fetch side pushes complete packets,
+- decode side pops only when it truly consumes a frontend slot,
+- `flush` clears younger queued packets.
+
+### How duplication can still happen
+
+At a stall-open boundary, the same decode payload can transiently reappear at
+execute if pipeline hold state lags by a cycle. Atomic crack completion can
+also present a stale frontend copy of the same just-drained atomic slot.
+
+### How duplicates are filtered
+
+- Decode uses `atomic_drain_dup` (keyed by slot id + pc + instr) to drop the
+  stale frontend copy immediately after an atomic crack sequence drains.
+- Execute applies final dedup with a packed signature register and drops
+  repeated decode signatures while a post-stall dedup window is active.
 
 ## Hazards, Forwarding, And Atomics
 

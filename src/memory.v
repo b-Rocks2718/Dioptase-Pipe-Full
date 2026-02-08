@@ -41,7 +41,7 @@ module tlb_memory(
   );
   // TLB faults are generated one stage after execute's address request.
   // Keep that fault on a live (non-bubble) slot even if execute is currently
-  // stalling/replaying, otherwise writeback can miss the exception.
+  // in a stall/duplicate window, otherwise writeback can miss the exception.
   wire tlb_fault_live = (tlb_exc_in != 8'd0);
 
   initial begin
