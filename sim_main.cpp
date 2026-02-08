@@ -1139,7 +1139,8 @@ bool run_headless(Vdioptase &top, uint64_t max_cycles, bool keyboard_via_uart,
 }
 
 void run_with_vga(Vdioptase &top, uint64_t max_cycles, bool keyboard_via_uart) {
-    VGAWIN window("640 656 752 800", "480 490 492 524");
+    // Display the VGA output at 2x scale for easier viewing without changing timing/mode.
+    VGAWIN window("640 656 752 800", "480 490 492 524", 2);
     DioptaseSim sim(top, window, max_cycles, keyboard_via_uart);
 
     auto idle = Glib::signal_idle().connect([&]() -> bool {
