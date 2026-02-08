@@ -74,9 +74,10 @@ module pipelined_cpu(
     assign mem_write_data = store_data;
 
     wire stall;
+    wire decode_stall;
     wire halt_pending;
     reg stall_d = 1'b0;
-    wire frontend_stop = stall | stall_d | halt_or_sleep | halt_pending;
+    wire frontend_stop = stall | decode_stall | stall_d | halt_or_sleep | halt_pending;
     wire [31:0]branch_tgt;
     wire [31:0]decode_pc_out;
     wire [31:0]tlb_fetch_pc_out;
@@ -159,6 +160,9 @@ module pipelined_cpu(
     wire decode_is_store_out;
     wire decode_is_branch_out;
     wire decode_is_post_inc_out;
+    wire decode_is_atomic_out;
+    wire decode_is_fetch_add_atomic_out;
+    wire [1:0]decode_atomic_step_out;
 
     wire [31:0]decode_cr_op_out;
     wire [4:0]decode_cr_s_out;
@@ -193,7 +197,9 @@ module pipelined_cpu(
       decode_is_load_out, decode_is_store_out, decode_is_branch_out,
       decode_is_post_inc_out, decode_tgts_cr_out, 
       decode_priv_type_out, decode_crmov_mode_type_out,
-      decode_tlb_we_out, decode_tlbc_out, interrupt_state
+      decode_tlb_we_out, decode_tlbc_out, interrupt_state,
+      decode_is_atomic_out, decode_is_fetch_add_atomic_out, decode_atomic_step_out,
+      decode_stall
     );
 
     wire exec_bubble_out;
@@ -253,6 +259,7 @@ module pipelined_cpu(
       mem_b_bubble_out, mem_b_is_load_out,
       decode_is_post_inc_out, decode_tgts_cr_out, decode_priv_type_out,
       decode_crmov_mode_type_out, decode_exc_out, exc_in_wb, mem_b_op2_out, rfe_in_wb,
+      decode_is_atomic_out, decode_is_fetch_add_atomic_out, decode_atomic_step_out,
 
       exec_result_out_1, exec_result_out_2,
       addr, exec_mem_re, exec_store_data, exec_mem_we,
