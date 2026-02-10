@@ -4,6 +4,8 @@ EMU_TESTS_DIR    := ../../Dioptase-Emulators/Dioptase-Emulator-Full/tests/asm
 SRC_DIR      		 := src
 HEX_DIR					 := tests/hex
 OUT_DIR      		 := tests/out
+SD_DMA_TB			 := tests/sd_dma_controller_tb.v
+SD_DMA_TB_VVP	 := $(OUT_DIR)/sd_dma_controller_tb.vvp
 
 # Tools
 ASSEMBLER    := ../../Dioptase-Assembler/build/debug/basm
@@ -62,6 +64,12 @@ TOTAL            := $(words $(ASM_SRCS))
 .PRECIOUS: %.hex %.vout %.emuout %.vcd
 
 all: sim.vvp
+
+$(SD_DMA_TB_VVP): $(SRC_DIR)/sd_dma_controller.v $(SD_DMA_TB) | dirs
+	$(IVERILOG) -g2012 -o $@ $^
+
+sd-dma-test: $(SD_DMA_TB_VVP)
+	$(VVP) $(SD_DMA_TB_VVP)
 
 # Keep the release emulator binary fresh so CPU-vs-emulator comparisons use the
 # same TLB/memory behavior as the current source tree.
@@ -185,7 +193,7 @@ test-verilator: check-verilator-deps $(ASM_SRCS) $(VERILOG_SRCS) $(EMULATOR) | d
 	echo; \
 	echo "Summary: $$passed / $$total tests passed."
 
-.PHONY: test dirs clean
+.PHONY: test sd-dma-test dirs clean
 
 clean:
 	rm -f $(OUT_DIR)/*
