@@ -11,6 +11,7 @@
 #include <iterator>
 #include <cstdio>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -71,6 +72,7 @@ struct Options {
     bool max_cycles_overridden = false;
     uint64_t max_cycles = 500;
     bool keyboard_via_uart = false;
+    std::string boot_hex_path;
     std::string sd0_image_path;
     std::string sd1_image_path;
 };
@@ -88,61 +90,256 @@ std::string trim_whitespace(const std::string &s) {
 }
 
 // Build artifacts may include '#label ...' metadata at the end of .hex files.
-// Verilog $readmemh rejects '#', so sanitize those files for simulation use.
-void sanitize_hex_plusarg(std::vector<std::string> &verilator_args) {
-    for (std::string &arg : verilator_args) {
-        static const std::string hex_prefix = "+hex=";
-        if (arg.rfind(hex_prefix, 0) != 0) {
-            continue;
+// Sanitize such files once so both the simulator-side parser and Verilog model
+// observe the same token stream.
+std::string sanitize_hex_file(const std::string &input_path) {
+    if (input_path.empty()) {
+        return input_path;
+    }
+
+    std::ifstream in(input_path);
+    if (!in.is_open()) {
+        std::cerr << "Failed to open hex file '" << input_path << "'" << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+
+    std::vector<std::string> cleaned_lines;
+    cleaned_lines.reserve(8192);
+    bool needs_sanitize = false;
+    std::string line;
+    while (std::getline(in, line)) {
+        const std::size_t hash_pos = line.find('#');
+        if (hash_pos != std::string::npos) {
+            line = line.substr(0, hash_pos);
+            needs_sanitize = true;
+        }
+        line = trim_whitespace(line);
+        if (!line.empty()) {
+            cleaned_lines.push_back(line);
+        }
+    }
+
+    if (!needs_sanitize) {
+        return input_path;
+    }
+
+    char tmp_template[] = "/tmp/dioptase_hex_XXXXXX";
+    const int fd = ::mkstemp(tmp_template);
+    if (fd < 0) {
+        std::cerr << "Failed to create sanitized hex temp file for " << input_path
+                  << ": " << std::strerror(errno) << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+    ::close(fd);
+
+    std::ofstream out(tmp_template, std::ios::out | std::ios::trunc);
+    if (!out.is_open()) {
+        std::cerr << "Failed to open sanitized hex temp file for " << input_path
+                  << ": " << tmp_template << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+    for (const std::string &clean : cleaned_lines) {
+        out << clean << '\n';
+    }
+    out.close();
+    return std::string(tmp_template);
+}
+
+std::string strip_hex_prefix_and_underscores(const std::string &token) {
+    std::string normalized;
+    normalized.reserve(token.size());
+    for (char c : token) {
+        if (c != '_') {
+            normalized.push_back(c);
+        }
+    }
+    if (normalized.size() >= 2 && normalized[0] == '0' &&
+        (normalized[1] == 'x' || normalized[1] == 'X')) {
+        normalized = normalized.substr(2);
+    }
+    return normalized;
+}
+
+uint64_t parse_hex_u64_or_die(const std::string &token,
+                              const std::string &hex_path,
+                              std::size_t line_no) {
+    const std::string normalized = strip_hex_prefix_and_underscores(token);
+    if (normalized.empty()) {
+        std::cerr << "Invalid empty hex token in '" << hex_path
+                  << "' line " << line_no << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+
+    std::size_t parsed_chars = 0;
+    uint64_t value = 0;
+    try {
+        value = std::stoull(normalized, &parsed_chars, 16);
+    } catch (const std::exception &) {
+        std::cerr << "Invalid hex token '" << token << "' in '" << hex_path
+                  << "' line " << line_no << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+    if (parsed_chars != normalized.size()) {
+        std::cerr << "Invalid hex token '" << token << "' in '" << hex_path
+                  << "' line " << line_no << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+    return value;
+}
+
+struct ICacheLineImage {
+    uint8_t set = 0;
+    uint16_t tag = 0;
+    std::array<uint32_t, 16> words{};
+};
+
+struct ICacheImage {
+    std::vector<ICacheLineImage> lines;
+    std::size_t total_words = 0;
+};
+
+// Parse a readmemh-style image as 32-bit words and project it onto icache lines.
+ICacheImage parse_hex_for_icache(const std::string &hex_path) {
+    std::ifstream in(hex_path);
+    if (!in.is_open()) {
+        std::cerr << "Failed to open hex file '" << hex_path << "'" << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+
+    ICacheImage image;
+    std::unordered_map<uint32_t, std::size_t> line_index_by_key;
+    uint64_t next_word_addr = 0;
+    std::string line;
+    std::size_t line_no = 0;
+    while (std::getline(in, line)) {
+        ++line_no;
+        const std::size_t slash_pos = line.find("//");
+        if (slash_pos != std::string::npos) {
+            line = line.substr(0, slash_pos);
+        }
+        const std::size_t hash_pos = line.find('#');
+        if (hash_pos != std::string::npos) {
+            line = line.substr(0, hash_pos);
         }
 
-        const std::string input_path = arg.substr(hex_prefix.size());
-        std::ifstream in(input_path);
-        if (!in.is_open()) {
-            continue;
-        }
-
-        std::vector<std::string> cleaned_lines;
-        cleaned_lines.reserve(8192);
-        bool needs_sanitize = false;
-        std::string line;
-        while (std::getline(in, line)) {
-            const std::size_t hash_pos = line.find('#');
-            if (hash_pos != std::string::npos) {
-                line = line.substr(0, hash_pos);
-                needs_sanitize = true;
+        std::istringstream iss(line);
+        std::string token;
+        while (iss >> token) {
+            while (!token.empty() && token.back() == ',') {
+                token.pop_back();
             }
-            line = trim_whitespace(line);
-            if (!line.empty()) {
-                cleaned_lines.push_back(line);
+            if (token.empty()) {
+                continue;
             }
-        }
 
-        if (!needs_sanitize) {
-            continue;
-        }
+            if (token[0] == '@') {
+                const uint64_t addr = parse_hex_u64_or_die(token.substr(1), hex_path, line_no);
+                next_word_addr = addr;
+                continue;
+            }
 
-        char tmp_template[] = "/tmp/dioptase_hex_XXXXXX";
-        const int fd = ::mkstemp(tmp_template);
-        if (fd < 0) {
-            std::cerr << "Failed to create sanitized hex temp file for " << input_path
-                      << ": " << std::strerror(errno) << std::endl;
+            const uint64_t value = parse_hex_u64_or_die(token, hex_path, line_no);
+            const uint64_t byte_addr = next_word_addr << 2;
+            if (byte_addr >= (1ull << 27)) {
+                std::cerr << "Hex word address out of 27-bit physical range in '"
+                          << hex_path << "' line " << line_no
+                          << ": word index 0x" << std::hex << next_word_addr << std::dec
+                          << std::endl;
+                std::exit(EXIT_FAILURE);
+            }
+
+            const uint8_t set = static_cast<uint8_t>((byte_addr >> 6) & 0xFFu);
+            const uint16_t tag = static_cast<uint16_t>((byte_addr >> 14) & 0x1FFFu);
+            const uint8_t word_in_line = static_cast<uint8_t>((byte_addr >> 2) & 0xFu);
+            const uint32_t key = (static_cast<uint32_t>(tag) << 8) | set;
+
+            auto line_it = line_index_by_key.find(key);
+            if (line_it == line_index_by_key.end()) {
+                ICacheLineImage new_line;
+                new_line.set = set;
+                new_line.tag = tag;
+                const std::size_t idx = image.lines.size();
+                image.lines.push_back(new_line);
+                line_index_by_key.emplace(key, idx);
+                line_it = line_index_by_key.find(key);
+            }
+            image.lines[line_it->second].words[word_in_line] = static_cast<uint32_t>(value);
+            ++next_word_addr;
+            ++image.total_words;
+        }
+    }
+
+    return image;
+}
+
+// Replace reset-time L1 cache contents with the boot hex image while leaving
+// backing RAM uninitialized from +hex.
+void preload_icache_from_hex(Vdioptase &top, const std::string &hex_path) {
+    if (hex_path.empty()) {
+        return;
+    }
+
+    ICacheImage image = parse_hex_for_icache(hex_path);
+    auto *root = top.rootp;
+    for (int set = 0; set < 256; ++set) {
+        root->dioptase__DOT__mem__DOT__icache__DOT__evictee[set] = 0;
+        root->dioptase__DOT__mem__DOT__icache__DOT__valid0[set] = 0;
+        root->dioptase__DOT__mem__DOT__icache__DOT__dirty0[set] = 0;
+        root->dioptase__DOT__mem__DOT__icache__DOT__tags0[set] = 0;
+        root->dioptase__DOT__mem__DOT__icache__DOT__valid1[set] = 0;
+        root->dioptase__DOT__mem__DOT__icache__DOT__dirty1[set] = 0;
+        root->dioptase__DOT__mem__DOT__icache__DOT__tags1[set] = 0;
+        root->dioptase__DOT__mem__DOT__dcache__DOT__evictee[set] = 0;
+        root->dioptase__DOT__mem__DOT__dcache__DOT__valid0[set] = 0;
+        root->dioptase__DOT__mem__DOT__dcache__DOT__dirty0[set] = 0;
+        root->dioptase__DOT__mem__DOT__dcache__DOT__tags0[set] = 0;
+        root->dioptase__DOT__mem__DOT__dcache__DOT__valid1[set] = 0;
+        root->dioptase__DOT__mem__DOT__dcache__DOT__dirty1[set] = 0;
+        root->dioptase__DOT__mem__DOT__dcache__DOT__tags1[set] = 0;
+        for (int word = 0; word < 16; ++word) {
+            root->dioptase__DOT__mem__DOT__icache__DOT__way0[set][word] = 0;
+            root->dioptase__DOT__mem__DOT__icache__DOT__way1[set][word] = 0;
+            root->dioptase__DOT__mem__DOT__dcache__DOT__way0[set][word] = 0;
+            root->dioptase__DOT__mem__DOT__dcache__DOT__way1[set][word] = 0;
+        }
+    }
+
+    std::array<uint8_t, 256> ways_used{};
+    for (const ICacheLineImage &line : image.lines) {
+        const uint8_t set = line.set;
+        const uint8_t way = ways_used[set];
+        if (way >= 2) {
+            std::cerr << "Boot image '" << hex_path
+                      << "' maps more than two tags to icache set " << static_cast<unsigned>(set)
+                      << "; cannot preload this image into 2-way icache without RAM backing."
+                      << std::endl;
             std::exit(EXIT_FAILURE);
         }
-        ::close(fd);
 
-        std::ofstream out(tmp_template, std::ios::out | std::ios::trunc);
-        if (!out.is_open()) {
-            std::cerr << "Failed to open sanitized hex temp file for " << input_path
-                      << ": " << tmp_template << std::endl;
-            std::exit(EXIT_FAILURE);
+        if (way == 0) {
+            root->dioptase__DOT__mem__DOT__icache__DOT__tags0[set] = line.tag;
+            root->dioptase__DOT__mem__DOT__icache__DOT__valid0[set] = 1;
+            root->dioptase__DOT__mem__DOT__icache__DOT__dirty0[set] = 0;
+            root->dioptase__DOT__mem__DOT__dcache__DOT__tags0[set] = line.tag;
+            root->dioptase__DOT__mem__DOT__dcache__DOT__valid0[set] = 1;
+            root->dioptase__DOT__mem__DOT__dcache__DOT__dirty0[set] = 0;
+            for (int word = 0; word < 16; ++word) {
+                root->dioptase__DOT__mem__DOT__icache__DOT__way0[set][word] = line.words[word];
+                root->dioptase__DOT__mem__DOT__dcache__DOT__way0[set][word] = line.words[word];
+            }
+        } else {
+            root->dioptase__DOT__mem__DOT__icache__DOT__tags1[set] = line.tag;
+            root->dioptase__DOT__mem__DOT__icache__DOT__valid1[set] = 1;
+            root->dioptase__DOT__mem__DOT__icache__DOT__dirty1[set] = 0;
+            root->dioptase__DOT__mem__DOT__dcache__DOT__tags1[set] = line.tag;
+            root->dioptase__DOT__mem__DOT__dcache__DOT__valid1[set] = 1;
+            root->dioptase__DOT__mem__DOT__dcache__DOT__dirty1[set] = 0;
+            for (int word = 0; word < 16; ++word) {
+                root->dioptase__DOT__mem__DOT__icache__DOT__way1[set][word] = line.words[word];
+                root->dioptase__DOT__mem__DOT__dcache__DOT__way1[set][word] = line.words[word];
+            }
         }
-        for (const std::string &clean : cleaned_lines) {
-            out << clean << '\n';
-        }
-        out.close();
-
-        arg = hex_prefix + std::string(tmp_template);
+        ways_used[set] = static_cast<uint8_t>(way + 1);
     }
 }
 
@@ -1160,12 +1357,12 @@ Options parse_options(int argc, char **argv, std::vector<std::string> &verilator
         // If +hex is explicitly provided, keep it authoritative.
         if (arg.rfind("+hex=", 0) == 0) {
             hex_arg_seen = true;
-            verilator_args.emplace_back(arg);
+            opts.boot_hex_path = arg.substr(5);
             continue;
         }
         if (!hex_arg_seen && !arg.empty() && arg[0] != '-' && arg[0] != '+') {
             hex_arg_seen = true;
-            verilator_args.emplace_back("+hex=" + arg);
+            opts.boot_hex_path = arg;
             continue;
         }
         verilator_args.emplace_back(arg);
@@ -1181,12 +1378,15 @@ Options parse_options(int argc, char **argv, std::vector<std::string> &verilator
 class DioptaseSim {
 public:
     DioptaseSim(Vdioptase &top, VGAWIN &window, uint64_t max_cycles, bool keyboard_via_uart,
+                const std::string &boot_hex_path,
                 const std::string &sd0_image_path, const std::string &sd1_image_path)
         : top_(top), window_(window),
           peripherals_(keyboard_via_uart, sd0_image_path, sd1_image_path),
           max_cycles_(max_cycles) {
         peripherals_.attach(top_);
         top_.clk = 0;
+        top_.eval();
+        preload_icache_from_hex(top_, boot_hex_path);
         top_.eval();
     }
 
@@ -1264,12 +1464,15 @@ private:
 };
 
 bool run_headless(Vdioptase &top, uint64_t max_cycles, bool keyboard_via_uart,
+                  const std::string &boot_hex_path,
                   const std::string &sd0_image_path, const std::string &sd1_image_path,
                   uint64_t &cycles_executed) {
     SimPeripherals peripherals(keyboard_via_uart, sd0_image_path, sd1_image_path);
     peripherals.attach(top);
 
     top.clk = 0;
+    top.eval();
+    preload_icache_from_hex(top, boot_hex_path);
     top.eval();
     if (Verilated::gotFinish()) {
         cycles_executed = 0;
@@ -1310,10 +1513,11 @@ bool run_headless(Vdioptase &top, uint64_t max_cycles, bool keyboard_via_uart,
 }
 
 void run_with_vga(Vdioptase &top, uint64_t max_cycles, bool keyboard_via_uart,
+                  const std::string &boot_hex_path,
                   const std::string &sd0_image_path, const std::string &sd1_image_path) {
     // Display the VGA output at 2x scale for easier viewing without changing timing/mode.
     VGAWIN window("640 656 752 800", "480 490 492 524", 2);
-    DioptaseSim sim(top, window, max_cycles, keyboard_via_uart, sd0_image_path, sd1_image_path);
+    DioptaseSim sim(top, window, max_cycles, keyboard_via_uart, boot_hex_path, sd0_image_path, sd1_image_path);
 
     auto idle = Glib::signal_idle().connect([&]() -> bool {
         if (!sim.step()) {
@@ -1336,7 +1540,7 @@ void run_with_vga(Vdioptase &top, uint64_t max_cycles, bool keyboard_via_uart,
 int main(int argc, char **argv) {
     std::vector<std::string> verilator_args;
     Options opts = parse_options(argc, argv, verilator_args);
-    sanitize_hex_plusarg(verilator_args);
+    opts.boot_hex_path = sanitize_hex_file(opts.boot_hex_path);
 
     const std::string cycle_plusarg = "+cycle_limit=" + std::to_string(opts.max_cycles);
     verilator_args.push_back(cycle_plusarg);
@@ -1356,12 +1560,14 @@ int main(int argc, char **argv) {
 
         Vdioptase top;
         run_with_vga(top, opts.max_cycles, opts.keyboard_via_uart,
+                     opts.boot_hex_path,
                      opts.sd0_image_path, opts.sd1_image_path);
         top.final();
     } else {
         Vdioptase top;
         uint64_t cycles_executed = 0;
         bool finished = run_headless(top, opts.max_cycles, opts.keyboard_via_uart,
+                                     opts.boot_hex_path,
                                      opts.sd0_image_path, opts.sd1_image_path,
                                      cycles_executed);
         if (!finished && opts.max_cycles != 0) {

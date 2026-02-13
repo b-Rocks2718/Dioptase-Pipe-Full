@@ -15,9 +15,6 @@
  * - One request in flight at a time.
  * - Cache line size is fixed at 64 bytes (16 words).
  * - Replacement policy is pseudo-LRU via per-set evictee bit.
- *
- * CPU state assumptions:
- * - Mode/interrupt agnostic. This block does not inspect privilege state.
  */
 module cache(
     input wire clk,
