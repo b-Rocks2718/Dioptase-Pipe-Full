@@ -319,10 +319,16 @@ module decode(input clk, input clk_en,
       (fetch_add_load_step ? fetch_add_data :
        (fetch_add_add_step ? r_a : (fetch_add_store_step ? r_a : 5'd0))) : swap_data) :
       base_s_2;
+  // Execute-side load/use stalls hold decode outputs (`*_out`) for the same
+  // architectural slot. Keep regfile read addresses pinned to those held source
+  // registers while stalled so a late writeback can refresh operands for that
+  // slot before it re-enters execute.
+  wire [4:0]rf_s_1 = stall ? s_1_out : s_1;
+  wire [4:0]rf_s_2 = stall ? s_2_out : s_2;
 
   regfile regfile(clk, clk_en,
-        s_1, d_1,
-        s_2, d_2,
+        rf_s_1, d_1,
+        rf_s_2, d_2,
         we1, target_1, write_data_1,
         we2, target_2, write_data_2,
         kmode, reg_read_no_alias, wb_no_alias_1, wb_no_alias_2,
@@ -456,8 +462,9 @@ module decode(input clk, input clk_en,
             ) : 8'h0;
 
   // Exception priority at decode boundary:
-  // 1) duplicate-drop clears exceptions (slot is invalid anyway)
-  // 2) interrupt/tlb/priv exceptions keep slot live (bubble=0) for WB trap flow
+  // 1) flush/replay/kill always wins (younger work must not raise traps)
+  // 2) otherwise, interrupt/tlb/priv exceptions keep slot live (bubble=0) so
+  //    writeback can drive architectural trap flow.
   wire decode_has_exc = (interrupt_exc != 8'h0) || (exc_decode_in != 8'h0) || (exc_priv_instr != 8'h0);
   wire replay_drop = replay_front_drop || atomic_drain_dup;
   // IPI is intentionally squashed as a no-op in kernel mode for now.
@@ -469,6 +476,40 @@ module decode(input clk, input clk_en,
     if (clk_en) begin
       if (~halt) begin
         if (~stall) begin 
+          if ($test$plusargs("heap_watch") &&
+              (pc_decode_in == 32'h0001454C ||
+               pc_decode_in == 32'h00014550 ||
+               pc_decode_in == 32'h00014554 ||
+               (pc_decode_in == 32'h00014558 ||
+               pc_decode_in == 32'h000141b8 ||
+               pc_decode_in == 32'h00014254 ||
+               pc_decode_in == 32'h000147fc ||
+               pc_decode_in == 32'h00014868))) begin
+            $display("[heap_watch][decode] pc=%h instr=%h op=%0d rA=%0d rB=%0d s1=%0d s2=%0d d1=%h d2=%h imm=%h inc=%b%b is_ld=%b is_st=%b dec_st=%b wr_t1=%b t1_pred=%0d kill=%b slot_kill=%b has_exc=%b bub_in=%b stall=%b",
+                     pc_decode_in, instr_dec, opcode, r_a, r_b, s_1, s_2, d_1, d_2, imm, increment_type[1], increment_type[0],
+                     is_load, is_store, decode_is_store, decode_writes_tgt_1,
+                     ((decode_slot_kill || !decode_writes_tgt_1 || alias_postinc_load) ? 5'd0 : r_a),
+                     decode_kill, decode_slot_kill, decode_has_exc, bubble_decode_in, stall);
+          end
+          if ($test$plusargs("ctx_watch") &&
+              (((pc_decode_in >= 32'h000235A0) && (pc_decode_in <= 32'h00023680)) ||
+               ((pc_decode_in >= 32'h00021400) && (pc_decode_in <= 32'h00021580)) ||
+               ((pc_decode_in >= 32'h000215C0) && (pc_decode_in <= 32'h00021610)) ||
+               ((pc_decode_in >= 32'h00023510) && (pc_decode_in <= 32'h00023570)) ||
+               ((pc_decode_in >= 32'h00016540) && (pc_decode_in <= 32'h00016C20)) ||
+               ((pc_decode_in >= 32'h00011180) && (pc_decode_in <= 32'h000112A0)) ||
+               ((pc_decode_in >= 32'h00010780) && (pc_decode_in <= 32'h00010C20)))) begin
+            $display("[ctx_watch][decode] pc=%h op=%0d s1=%0d s2=%0d d1=%h d2=%h imm=%h is_ld=%b is_st=%b wr_t1=%b t1=%0d kill=%b sk=%b exc=%h stall=%b",
+                     pc_decode_in, opcode, s_1, s_2, d_1, d_2, imm,
+                     decode_is_load, decode_is_store, decode_writes_tgt_1,
+                     ((decode_slot_kill || !decode_writes_tgt_1 || alias_postinc_load) ? 5'd0 : r_a),
+                     decode_kill, decode_slot_kill, exc_out, stall);
+            if (pc_decode_in == 32'h00021420) begin
+              $display("[ctx_watch][decode_kill_21420] fl=%b bdec=%b rdrop=%b ipik=%b has_exc=%b iexc=%h iexc_dec=%h pexc=%h rep_front=%b adup=%b adrain=%b",
+                       flush, bubble_decode_in, replay_drop, ipi_noop_kill, decode_has_exc,
+                       interrupt_exc, exc_decode_in, exc_priv_instr, replay_front_drop, atomic_drain_dup, atomic_drain);
+            end
+          end
           opcode_out <= decode_slot_kill ? 5'd0 : decode_opcode;
           s_1_out <= decode_slot_kill ? 5'd0 : s_1;
           s_2_out <= decode_slot_kill ? 5'd0 : s_2;
@@ -480,10 +521,10 @@ module decode(input clk, input clk_en,
           imm_out <= decode_slot_kill ? 32'd0 : imm;
           branch_code_out <= decode_slot_kill ? 5'd0 : branch_code;
           alu_op_out <= decode_slot_kill ? 5'd0 : decode_alu_op;
-          // Faulting slots must remain live so writeback can observe exception
-          // metadata and drive redirect/trap behavior.
-          bubble_out <= decode_has_exc ? 1'b0 :
-            (decode_kill ? 1'b1 : bubble_decode_in);
+          // Invariant: any slot killed by flush/replay must not raise a trap.
+          // Only non-killed slots may surface decode exceptions.
+          bubble_out <= decode_kill ? 1'b1 :
+            (decode_has_exc ? 1'b0 : bubble_decode_in);
           pc_out <= pc_decode_in;
           slot_id_out <= slot_id_decode_in;
       
@@ -540,7 +581,7 @@ module decode(input clk, input clk_en,
         end
 
         if (~stall) begin
-          exc_out <= replay_drop ? 8'h0 :
+          exc_out <= decode_kill ? 8'h0 :
                     (interrupt_exc != 8'h0) ? interrupt_exc
                     : (exc_decode_in != 0) ? exc_decode_in : exc_priv_instr;
         end
@@ -570,14 +611,34 @@ module decode(input clk, input clk_en,
         was_stall <= stall;
         was_was_stall <= was_stall;
         was_decode_stall <= decode_stall;
-`ifdef SIMULATION
         if ($test$plusargs("decode_debug")) begin
           $display("[decode] pc_in=%h pc_dec=%h sid_in=%0d sid_dec=%0d use_buf=%b stall=%b dstall=%b b_in=%b b_dec=%b op=%0d repfix=%b repdup=%b ldup=%b asid=%b kill=%b",
             pc_in, pc_decode_in, slot_id_in, slot_id_decode_in, use_buf, stall, decode_stall,
             bubble_in, bubble_decode_in, opcode, replay_realign_drop, replay_followup_drop,
             replay_consecutive_drop, replay_slot_alias, decode_slot_kill);
         end
-`endif
+        if ($test$plusargs("evloop_dec_watch") &&
+            (pc_decode_in >= 32'h000216C0) && (pc_decode_in <= 32'h00021840)) begin
+          $display("[evloop_dec_watch] pc=%h sid=%0d instr=%h op=%0d b_in=%b b_dec=%b kill=%b slot_kill=%b repfix=%b repdup=%b ldup=%b asid=%b exc=%h",
+            pc_decode_in, slot_id_decode_in, instr_in, opcode, bubble_in, bubble_decode_in,
+            decode_kill, decode_slot_kill, replay_realign_drop, replay_followup_drop,
+            replay_consecutive_drop, replay_slot_alias, exc_out);
+        end
+        if ($test$plusargs("barrier_watch") &&
+            (((pc_decode_in >= 32'h00011190) && (pc_decode_in <= 32'h00011290)) ||
+             ((pc_decode_in >= 32'h00016A70) && (pc_decode_in <= 32'h00016AC0)) ||
+             ((pc_decode_in >= 32'h00023510) && (pc_decode_in <= 32'h00023530)) ||
+             ((pc_decode_in >= 32'h00023540) && (pc_decode_in <= 32'h00023570)))) begin
+          $display("[barrier_watch][decode] pc=%h sid=%0d instr=%h op=%0d dkill=%b dslot_kill=%b dexc=%h bub_in=%b bub_dec=%b st=%b dst=%b at=%b fadd=%b astep=%0d",
+            pc_decode_in, slot_id_decode_in, instr_in, opcode, decode_kill, decode_slot_kill, exc_out,
+            bubble_in, bubble_decode_in, stall, decode_stall, decode_is_atomic,
+            decode_is_fetch_add_atomic, decode_atomic_step);
+          if (pc_decode_in == 32'h00023520) begin
+            $display("[barrier_watch][decode_23520] fl=%b rep_drop=%b rep_front=%b adup=%b adrain=%b ipik=%b has_exc=%b iexc=%h iexc_dec=%h pexc=%h",
+              flush, replay_drop, replay_front_drop, atomic_drain_dup, atomic_drain,
+              ipi_noop_kill, decode_has_exc, interrupt_exc, exc_decode_in, exc_priv_instr);
+          end
+        end
 
       end else begin
         exc_out <= interrupt_exc;

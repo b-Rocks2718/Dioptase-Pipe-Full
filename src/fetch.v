@@ -11,7 +11,7 @@
 // - During `stall`, this block holds architectural PC/slot state and emits
 //   bubbles so downstream metadata stays aligned with any in-flight fetches.
 // - Pairing/ordering is handled by the decode-side frontend queue.
-module tlb_fetch(input clk, input clk_en, input stall,
+module tlb_fetch(input clk, input clk_en, input stall, input issue_accept,
     input branch, input [31:0]branch_tgt, input interrupt, input [31:0]interrupt_vector,
     input rfe_in_wb, input [31:0]epc,
     output [31:0]fetch_addr, output reg [31:0]pc_out, output reg [31:0]slot_id_out,
@@ -48,8 +48,10 @@ module tlb_fetch(input clk, input clk_en, input stall,
         pc <= branch_tgt;
         bubble_out <= 1'b1;
         exc_out <= 8'h0;
-      end else if (issue_stop) begin
+      end else if (issue_stop || !issue_accept) begin
         // Hold issue while backend/decode queue backpressure is active.
+        // Also hold when mem.v rejected this fetch issue attempt so PC/slot
+        // are retried instead of being dropped.
         bubble_out <= 1'b1;
         exc_out <= 8'h0;
       end else begin

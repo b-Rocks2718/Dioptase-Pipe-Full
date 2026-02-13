@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <iostream>
 #include <fstream>
+#include <iterator>
 #include <cstdio>
 #include <optional>
 #include <stdexcept>
@@ -70,6 +71,8 @@ struct Options {
     bool max_cycles_overridden = false;
     uint64_t max_cycles = 500;
     bool keyboard_via_uart = false;
+    std::string sd0_image_path;
+    std::string sd1_image_path;
 };
 
 std::string trim_whitespace(const std::string &s) {
@@ -519,6 +522,14 @@ private:
 
 class SdCardSpiDevice {
 public:
+    explicit SdCardSpiDevice(bool use_secondary = false)
+        : use_secondary_(use_secondary) {
+    }
+
+    void set_image_path(const std::string &path) {
+        image_path_ = path;
+    }
+
     void reset(Vdioptase &top) {
         prev_clk_ = false;
         prev_cs_ = true;
@@ -537,13 +548,14 @@ public:
         high_capacity_ = false;
         out_fifo_.clear();
         storage_.clear();
+        load_image_file();
         set_miso(top, true);
     }
 
     void tick(Vdioptase &top) {
-        const bool cs = top.sd_spi_cs != 0;
-        const bool clk = top.sd_spi_clk != 0;
-        const bool mosi = top.sd_spi_mosi != 0;
+        const bool cs = use_secondary_ ? (top.sd1_spi_cs != 0) : (top.sd_spi_cs != 0);
+        const bool clk = use_secondary_ ? (top.sd1_spi_clk != 0) : (top.sd_spi_clk != 0);
+        const bool mosi = use_secondary_ ? (top.sd1_spi_mosi != 0) : (top.sd_spi_mosi != 0);
 
         if (cs) {
             if (!prev_cs_) {
@@ -596,7 +608,37 @@ private:
     static constexpr uint32_t kOcrBase = 0x00FF8000u;
 
     void set_miso(Vdioptase &top, bool level) {
-        top.sd_spi_miso = level ? 1 : 0;
+        if (use_secondary_) {
+            top.sd1_spi_miso = level ? 1 : 0;
+        } else {
+            top.sd_spi_miso = level ? 1 : 0;
+        }
+    }
+
+    void load_image_file() {
+        if (image_path_.empty()) {
+            return;
+        }
+
+        std::ifstream image(image_path_, std::ios::binary);
+        if (!image.is_open()) {
+            std::cerr << "Failed to open SD image '" << image_path_ << "'" << std::endl;
+            std::exit(EXIT_FAILURE);
+        }
+
+        std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(image)),
+                                   std::istreambuf_iterator<char>());
+        const size_t num_blocks = (bytes.size() + 511) / 512;
+        for (size_t i = 0; i < num_blocks; ++i) {
+            std::array<uint8_t, 512> block{};
+            const size_t src_off = i * 512;
+            const size_t remain = bytes.size() > src_off ? (bytes.size() - src_off) : 0;
+            const size_t to_copy = remain > 512 ? 512 : remain;
+            for (size_t b = 0; b < to_copy; ++b) {
+                block[b] = bytes[src_off + b];
+            }
+            storage_[static_cast<uint32_t>(i)] = block;
+        }
     }
 
     void drive_next_bit(Vdioptase &top) {
@@ -797,11 +839,15 @@ private:
     bool initialized_ = false;
     bool high_capacity_ = false;
     std::unordered_map<uint32_t, std::array<uint8_t, 512>> storage_;
+    bool use_secondary_ = false;
+    std::string image_path_;
 };
 
 class SimPeripherals {
 public:
-    explicit SimPeripherals(bool keyboard_via_uart)
+    explicit SimPeripherals(bool keyboard_via_uart,
+                            const std::string &sd0_image_path,
+                            const std::string &sd1_image_path)
         : keyboard_route_(keyboard_via_uart ? KeyboardRoute::Uart : KeyboardRoute::Ps2),
           keyboard_(guard_, ps2_, uart_input_, keyboard_route_),
           pit_debug_(std::getenv("PIT_DEBUG") != nullptr),
@@ -809,6 +855,8 @@ public:
           uart_debug_(std::getenv("UART_DEBUG") != nullptr),
           ps2_debug_(std::getenv("PS2_DEBUG") != nullptr),
           cdiv_debug_(std::getenv("CDIV_DEBUG") != nullptr) {
+        sd0_card_.set_image_path(sd0_image_path);
+        sd1_card_.set_image_path(sd1_image_path);
         const char *boot = std::getenv("UART_BOOT");
         if (boot != nullptr) {
             while (*boot != '\0') {
@@ -845,7 +893,8 @@ public:
     void attach(Vdioptase &top) {
         ps2_.reset(top);
         uart_input_.reset(top);
-        sd_card_.reset(top);
+        sd0_card_.reset(top);
+        sd1_card_.reset(top);
         for (uint8_t sc : initial_ps2_scancodes_) {
             ps2_.enqueue_sequence(std::vector<uint8_t>{sc});
         }
@@ -861,12 +910,14 @@ public:
         keyboard_.poll();
         uart_input_.tick(top);
         ps2_.tick(top);
-        sd_card_.tick(top);
+        sd0_card_.tick(top);
+        sd1_card_.tick(top);
     }
 
     void after_posedge(Vdioptase &top) {
         uart_.after_posedge(top);
-        sd_card_.tick(top);
+        sd0_card_.tick(top);
+        sd1_card_.tick(top);
         if (uart_debug_) {
             const uint32_t reg_r5_cur = top.rootp->dioptase__DOT__cpu__DOT__decode__DOT__regfile__DOT__regfile[5];
             const uint8_t rx_count = static_cast<uint8_t>(top.rootp->dioptase__DOT__uart__DOT__rx_buf__DOT__count);
@@ -887,7 +938,6 @@ public:
                     const uint32_t mem_stage_res = top.rootp->dioptase__DOT__cpu__DOT__mem_b_result_out_1;
                     const uint8_t mem_is_load = top.rootp->dioptase__DOT__cpu__DOT__mem_b_is_load_out;
                     const uint8_t exec_is_load = top.rootp->dioptase__DOT__cpu__DOT__exec_is_load_out;
-                    const uint32_t wb_res = top.rootp->dioptase__DOT__cpu__DOT__wb_result_out_1;
                     const uint8_t mem_opcode = static_cast<uint8_t>(top.rootp->dioptase__DOT__cpu__DOT__mem_b_opcode_out);
                     std::cerr << "[uart] r5 now 0x" << std::hex << std::setw(8) << std::setfill('0')
                               << reg_r5_cur << " raddr0=0x" << std::setw(5) << raddr0
@@ -899,7 +949,6 @@ public:
                               << " exec_is_load=" << static_cast<int>(exec_is_load)
                               << " mem_is_load=" << static_cast<int>(mem_is_load)
                               << " mem_opcode=" << static_cast<int>(mem_opcode)
-                              << " wb_result=0x" << std::setw(8) << wb_res
                               << std::dec << std::setfill(' ') << std::endl;
                 }
                 prev_rx_count_ = rx_count;
@@ -934,8 +983,6 @@ public:
         if (pit_debug_) {
             const bool pit_irq = top.rootp->dioptase__DOT__mem__DOT__pit_interrupt;
             if (pit_irq && !pit_irq_prev_) {
-                const uint32_t color = top.rootp->dioptase__DOT__mem__DOT__ram[355];
-                const uint32_t ivt_f0 = top.rootp->dioptase__DOT__mem__DOT__ram[240];
                 const uint32_t tile00 = top.rootp->dioptase__DOT__mem__DOT__tile_map[0];
                 const uint32_t tile0 = top.rootp->dioptase__DOT__mem__DOT__tile_map[32];
                 const uint32_t tile1 = top.rootp->dioptase__DOT__mem__DOT__tile_map[33];
@@ -949,10 +996,8 @@ public:
                 const bool sleep = top.rootp->dioptase__DOT__cpu__DOT__sleep;
                 const bool in_wb_irq = top.rootp->dioptase__DOT__cpu__DOT__interrupt_in_wb;
                 std::cerr << "[pit] interrupt at cycle " << total_cycles_
-                          << ", color=0x" << std::hex << std::setw(8)
-                          << std::setfill('0') << color
-                          << " ivt_f0=0x" << std::setw(8) << ivt_f0
-                          << " tile[0]=0x" << std::setw(8) << tile00
+                          << ", tile[0]=0x" << std::hex << std::setw(8)
+                          << std::setfill('0') << tile00
                           << " tile[32]=0x" << std::setw(8) << tile0
                           << " tile[33]=0x" << std::setw(8) << tile1
                           << " isr=0x" << std::setw(8) << isr
@@ -1028,7 +1073,8 @@ public:
     }
 
     void after_cycle(Vdioptase &top) {
-        sd_card_.tick(top);
+        sd0_card_.tick(top);
+        sd1_card_.tick(top);
     }
 
 private:
@@ -1038,7 +1084,8 @@ private:
     UartStimulus uart_input_;
     KeyboardInput keyboard_;
     UartConsole uart_;
-    SdCardSpiDevice sd_card_;
+    SdCardSpiDevice sd0_card_;
+    SdCardSpiDevice sd1_card_{true};
     bool pit_debug_ = false;
     bool pit_irq_prev_ = false;
     bool vblank_debug_ = false;
@@ -1061,6 +1108,7 @@ Options parse_options(int argc, char **argv, std::vector<std::string> &verilator
     verilator_args.emplace_back(argv[0]);
 
     const std::string max_cycles_prefix = "--max-cycles=";
+    bool hex_arg_seen = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg(argv[i]);
@@ -1072,6 +1120,30 @@ Options parse_options(int argc, char **argv, std::vector<std::string> &verilator
             opts.keyboard_via_uart = true;
             continue;
         }
+        if (arg == "--sd0") {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing path after --sd0" << std::endl;
+                std::exit(EXIT_FAILURE);
+            }
+            opts.sd0_image_path = argv[++i];
+            continue;
+        }
+        if (arg == "--sd1") {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing path after --sd1" << std::endl;
+                std::exit(EXIT_FAILURE);
+            }
+            opts.sd1_image_path = argv[++i];
+            continue;
+        }
+        if (arg.rfind("--sd0=", 0) == 0) {
+            opts.sd0_image_path = arg.substr(6);
+            continue;
+        }
+        if (arg.rfind("--sd1=", 0) == 0) {
+            opts.sd1_image_path = arg.substr(6);
+            continue;
+        }
         if (arg.rfind(max_cycles_prefix, 0) == 0) {
             const std::string value = arg.substr(max_cycles_prefix.size());
             try {
@@ -1081,6 +1153,19 @@ Options parse_options(int argc, char **argv, std::vector<std::string> &verilator
                 std::cerr << "Invalid value for --max-cycles: " << value << std::endl;
                 std::exit(EXIT_FAILURE);
             }
+            continue;
+        }
+        // Support positional hex image invocation:
+        //   ./obj_dir/dioptase bios.hex
+        // If +hex is explicitly provided, keep it authoritative.
+        if (arg.rfind("+hex=", 0) == 0) {
+            hex_arg_seen = true;
+            verilator_args.emplace_back(arg);
+            continue;
+        }
+        if (!hex_arg_seen && !arg.empty() && arg[0] != '-' && arg[0] != '+') {
+            hex_arg_seen = true;
+            verilator_args.emplace_back("+hex=" + arg);
             continue;
         }
         verilator_args.emplace_back(arg);
@@ -1095,8 +1180,11 @@ Options parse_options(int argc, char **argv, std::vector<std::string> &verilator
 
 class DioptaseSim {
 public:
-    DioptaseSim(Vdioptase &top, VGAWIN &window, uint64_t max_cycles, bool keyboard_via_uart)
-        : top_(top), window_(window), peripherals_(keyboard_via_uart), max_cycles_(max_cycles) {
+    DioptaseSim(Vdioptase &top, VGAWIN &window, uint64_t max_cycles, bool keyboard_via_uart,
+                const std::string &sd0_image_path, const std::string &sd1_image_path)
+        : top_(top), window_(window),
+          peripherals_(keyboard_via_uart, sd0_image_path, sd1_image_path),
+          max_cycles_(max_cycles) {
         peripherals_.attach(top_);
         top_.clk = 0;
         top_.eval();
@@ -1176,8 +1264,9 @@ private:
 };
 
 bool run_headless(Vdioptase &top, uint64_t max_cycles, bool keyboard_via_uart,
+                  const std::string &sd0_image_path, const std::string &sd1_image_path,
                   uint64_t &cycles_executed) {
-    SimPeripherals peripherals(keyboard_via_uart);
+    SimPeripherals peripherals(keyboard_via_uart, sd0_image_path, sd1_image_path);
     peripherals.attach(top);
 
     top.clk = 0;
@@ -1220,10 +1309,11 @@ bool run_headless(Vdioptase &top, uint64_t max_cycles, bool keyboard_via_uart,
     }
 }
 
-void run_with_vga(Vdioptase &top, uint64_t max_cycles, bool keyboard_via_uart) {
+void run_with_vga(Vdioptase &top, uint64_t max_cycles, bool keyboard_via_uart,
+                  const std::string &sd0_image_path, const std::string &sd1_image_path) {
     // Display the VGA output at 2x scale for easier viewing without changing timing/mode.
     VGAWIN window("640 656 752 800", "480 490 492 524", 2);
-    DioptaseSim sim(top, window, max_cycles, keyboard_via_uart);
+    DioptaseSim sim(top, window, max_cycles, keyboard_via_uart, sd0_image_path, sd1_image_path);
 
     auto idle = Glib::signal_idle().connect([&]() -> bool {
         if (!sim.step()) {
@@ -1265,12 +1355,15 @@ int main(int argc, char **argv) {
         Gtk::Main gtk(gtk_argc, gtk_argv);
 
         Vdioptase top;
-        run_with_vga(top, opts.max_cycles, opts.keyboard_via_uart);
+        run_with_vga(top, opts.max_cycles, opts.keyboard_via_uart,
+                     opts.sd0_image_path, opts.sd1_image_path);
         top.final();
     } else {
         Vdioptase top;
         uint64_t cycles_executed = 0;
-        bool finished = run_headless(top, opts.max_cycles, opts.keyboard_via_uart, cycles_executed);
+        bool finished = run_headless(top, opts.max_cycles, opts.keyboard_via_uart,
+                                     opts.sd0_image_path, opts.sd1_image_path,
+                                     cycles_executed);
         if (!finished && opts.max_cycles != 0) {
             std::cout << "Headless simulation stopped after " << cycles_executed
                       << " cycles without $finish." << std::endl;

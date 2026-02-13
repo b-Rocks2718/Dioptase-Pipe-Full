@@ -33,6 +33,7 @@ module execute(input clk, input clk_en, input halt,
     input [31:0]wb_result_out_1, input [31:0]wb_result_out_2,
     input tlb_mem_tgts_cr, input mem_a_tgts_cr, input mem_b_tgts_cr, input wb_tgts_cr,
     input tlb_mem_no_alias_1, input mem_a_no_alias_1, input mem_b_no_alias_1, input wb_no_alias_1,
+    input wb_load,
     
     input [31:0]decode_pc_out, input [31:0]slot_id,
 
@@ -247,11 +248,15 @@ module execute(input clk, input clk_en, input halt,
     op2;
   wire fadd_add_step = is_atomic && is_fetch_add_atomic && (atomic_step == 2'd1);
   wire fadd_store_step = is_atomic && is_fetch_add_atomic && is_store;
+  // Decode may present a live trap slot (`bubble_in=0`, `exc_in!=0`) so
+  // writeback can retire the exception. Treat it as killed for execute
+  // side-effects.
+  wire exc_slot = (exc_in != 8'd0);
   wire crmov_reads_creg = is_crmov &&
     (crmov_mode_type == 2'd1 || crmov_mode_type == 2'd2);
   wire [4:0]dep_s1 = crmov_reads_creg ? 5'd0 : s_1;
   wire [4:0]dep_s2 = is_crmov ? 5'd0 : s_2;
-  wire decode_live = !bubble_in && !exc_in_wb && !rfe_in_wb;
+  wire decode_live = !bubble_in && !exc_slot && !exc_in_wb && !rfe_in_wb;
 
   wire ex1_dep_hit = ex1_gpr_valid && (tgt_out_1 != 5'd0) &&
     ((tgt_out_1 != 5'd31) || (source_no_alias_s1 == ex1_no_alias) ||
@@ -330,9 +335,12 @@ module execute(input clk, input clk_en, input halt,
   };
   // When a load-use stall opens, stale decode copies can reappear in execute.
   // Drop repeated decode signatures until decode advances to new work.
-  wire exec_dup = replay_dedup_active && !opening_after_stall &&
-    !bubble_in && !stall && !exc_in_wb && !rfe_in_wb &&
-    (decode_sig == last_decode_sig);
+  //
+  // Invariant:
+  // - `slot_id` is part of `decode_sig`, so true new work is never dropped just
+  //   because payload fields match an older slot.
+  wire exec_dup = replay_dedup_active && !stall && !bubble_in &&
+    !exc_in_wb && !rfe_in_wb && (decode_sig == last_decode_sig);
 
   // ISA subtract-immediate uses immediate as lhs and register as rhs.
   // This mux keeps ALU op encoding unchanged while honoring that semantic.
@@ -341,8 +349,8 @@ module execute(input clk, input clk_en, input halt,
                   (5'd3 <= opcode && opcode <= 5'd11) || (opcode == 5'd22)) ? 
                     imm : (opcode == 5'd1 && alu_op == 5'd16) ? atomic_op1 : atomic_op2;
 
-  wire we_bit = is_store && !bubble_in && !exc_in_wb
-                && !rfe_in_wb && (exc_out == 8'd0) && !stall && !exec_dup;
+  wire we_bit = is_store && !bubble_in && !exc_slot && !exc_in_wb
+                && !rfe_in_wb && !stall && !exec_dup;
   wire crmv_writes_cr = is_crmov &&
     ((crmov_mode_type == 2'd0) || (crmov_mode_type == 2'd2));
   // cr9 (CID) is read-only; suppress architectural control-register writeback.
@@ -356,7 +364,9 @@ module execute(input clk, input clk_en, input halt,
   wire flags_we = rfe_in_wb || crmv_write_flg_live;
 
   wire [31:0]alu_rslt;
-  ALU ALU(clk, clk_en, opcode, alu_op, lhs, rhs, decode_pc_out, bubble_in, 
+  // Do not let killed/exception slots mutate live flags.
+  wire alu_bubble = bubble_in || exc_slot || exc_in_wb || stall || exec_dup || halt;
+  ALU ALU(clk, clk_en, opcode, alu_op, lhs, rhs, decode_pc_out, alu_bubble,
     flags_restore_mux, flags_we,
     alu_rslt, flags);
 
@@ -465,9 +475,73 @@ always @(posedge clk) begin
       bubble_out <= slot_kill ? 1'b1 : bubble_in;
 
       addr <= slot_kill ? 32'd0 : mem_addr;
-      mem_re <= is_load && !slot_kill && (exc_out == 8'd0);
+      mem_re <= is_load && !slot_kill;
       store_data <= slot_kill ? 32'd0 : store_data_next;
       we <= slot_kill ? 4'd0 : we_next;
+
+      if ($test$plusargs("heap_watch") && !slot_kill &&
+          (((we_next != 4'd0) &&
+            (mem_addr == 32'h00200000 || mem_addr == 32'h00200004 ||
+             mem_addr == 32'h00200008 || mem_addr == 32'h0020000C ||
+             mem_addr == 32'h00200010 || mem_addr == 32'h00200014)) ||
+           (decode_pc_out == 32'h0001454C || decode_pc_out == 32'h00014550 ||
+            decode_pc_out == 32'h00014554 || decode_pc_out == 32'h00014558))) begin
+        $display("[heap_watch][exec] pc=%h op=%0d s1=r%0d s2=r%0d reg1=%h reg2=%h op1=%h op2=%h mem_addr=%h store=%h we=%b",
+                 decode_pc_out, opcode, s_1, s_2, reg_out_1, reg_out_2, op1, op2, mem_addr, store_data_next, we_next);
+        $display("[heap_watch][exec] s2 hits ex1=%b ex2=%b tlbm1=%b tlbm2=%b mema1=%b mema2=%b memb1=%b memb2=%b wb1=%b wb2=%b ba1=%b ba2=%b bb1=%b bb2=%b",
+                 ex1_hit_s2, ex2_hit_s2, tlbm1_hit_s2, tlbm2_hit_s2, mema1_hit_s2, mema2_hit_s2,
+                 memb1_hit_s2, memb2_hit_s2, wb1_hit_s2, wb2_hit_s2, buf_a1_hit_s2, buf_a2_hit_s2,
+                 buf_b1_hit_s2, buf_b2_hit_s2);
+        $display("[heap_watch][exec] tgts ex=(%0d,%0d) tlbm=(%0d,%0d,b=%b,ld=%b) mema=(%0d,%0d,b=%b,ld=%b) memb=(%0d,%0d,b=%b,ld=%b) wb=(%0d,%0d,b=%b,ld=%b)",
+                 tgt_out_1, tgt_out_2,
+                 tlb_mem_tgt_1, tlb_mem_tgt_2, tlb_mem_bubble, tlb_mem_is_load,
+                 mem_a_tgt_1, mem_a_tgt_2, mem_a_bubble, mem_a_load,
+                 mem_b_tgt_1, mem_b_tgt_2, mem_b_bubble, mem_b_load,
+                 wb_tgt_1, wb_tgt_2, wb_tgts_cr, wb_load);
+      end
+      if ($test$plusargs("ctx_watch") &&
+          (((decode_pc_out >= 32'h000235A0) && (decode_pc_out <= 32'h00023680)) ||
+           ((decode_pc_out >= 32'h00021400) && (decode_pc_out <= 32'h00021580)) ||
+           ((decode_pc_out >= 32'h000215C0) && (decode_pc_out <= 32'h00021610)) ||
+           ((decode_pc_out >= 32'h00023510) && (decode_pc_out <= 32'h00023570)) ||
+           ((decode_pc_out >= 32'h00016540) && (decode_pc_out <= 32'h00016C20)) ||
+           ((decode_pc_out >= 32'h00011180) && (decode_pc_out <= 32'h000112A0)) ||
+           ((decode_pc_out >= 32'h00010780) && (decode_pc_out <= 32'h00010C20))) ) begin
+        $display("[ctx_watch][exec] pc=%h op=%0d s1=r%0d s2=r%0d reg1=%h reg2=%h op1=%h op2=%h mem_addr=%h store=%h we=%b stall=%b sk=%b br=%b taken=%b btgt=%h is_br=%b",
+                 decode_pc_out, opcode, s_1, s_2, reg_out_1, reg_out_2,
+                 op1, op2, mem_addr, store_data_next, we_next, stall, slot_kill,
+                 branch, taken, branch_tgt, is_branch);
+      end
+      if ($test$plusargs("evloop_watch") &&
+          (decode_pc_out >= 32'h000215E0) && (decode_pc_out <= 32'h00021840) &&
+          is_branch && !bubble_in) begin
+        $display("[evloop_watch][exec] pc=%h bcode=%0d taken=%b branch=%b flags=%b excwb=%b rfewb=%b stall=%b",
+                 decode_pc_out, branch_code, taken, branch, flags,
+                 exc_in_wb, rfe_in_wb, stall);
+      end
+      if ($test$plusargs("evloop_memwatch") &&
+          (decode_pc_out >= 32'h000215E0) && (decode_pc_out <= 32'h00021840) &&
+          !bubble_in && (is_load || is_store)) begin
+        $display("[evloop_memwatch][exec] pc=%h op=%0d ld=%b st=%b addr=%h we=%b wdata=%h op1=%h op2=%h",
+                 decode_pc_out, opcode, is_load, is_store, mem_addr, we_next,
+                 store_data_next, op1, op2);
+      end
+      if ($test$plusargs("evloop_cmp_watch") &&
+          (decode_pc_out >= 32'h000216D0) && (decode_pc_out <= 32'h000216E8) &&
+          !bubble_in) begin
+        $display("[evloop_cmp_watch][exec] pc=%h op=%0d alu=%0d s1=%0d s2=%0d op1=%h op2=%h lhs=%h rhs=%h flags=%b",
+                 decode_pc_out, opcode, alu_op, s_1, s_2, op1, op2, lhs, rhs, flags);
+      end
+      if ($test$plusargs("barrier_watch") &&
+          (((decode_pc_out >= 32'h00011190) && (decode_pc_out <= 32'h00011290)) ||
+           ((decode_pc_out >= 32'h00016A70) && (decode_pc_out <= 32'h00016AC0)) ||
+           ((decode_pc_out >= 32'h00023510) && (decode_pc_out <= 32'h00023530)) ||
+           ((decode_pc_out >= 32'h00023540) && (decode_pc_out <= 32'h00023570))) &&
+          !bubble_in) begin
+        $display("[barrier_watch][exec] pc=%h sid=%0d op=%0d sk=%b dup=%b st=%b exwb=%b rfewb=%b exc=%h at=%b fadd=%b astep=%0d ld=%b stw=%b maddr=%h we=%b wdata=%h",
+                 decode_pc_out, slot_id, opcode, slot_kill, exec_dup, stall, exc_in_wb, rfe_in_wb,
+                 exc_in, is_atomic, is_fetch_add_atomic, atomic_step, is_load, is_store, mem_addr, we_next, store_data_next);
+      end
 
       is_load_out <= slot_kill ? 1'b0 : is_load;
       is_store_out <= slot_kill ? 1'b0 : is_store;
@@ -556,7 +630,7 @@ end
                  (branch_code == 5'd18) ? !flags[0] || flags[1] : // bbe
                  0;
 
-  assign branch = !bubble_in && !exc_in_wb && !rfe_in_wb && taken && is_branch;
+  assign branch = !slot_kill && taken && is_branch;
   
   assign branch_tgt = 
             (opcode == 5'd12) ? decode_pc_out + (imm << 2) + 32'h4 :

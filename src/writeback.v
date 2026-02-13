@@ -24,20 +24,14 @@ module writeback(input clk, input clk_en, input halt, input bubble_in,
     output [31:0]result_out_1,
     output [31:0]result_out_2,
     
-    output we1, output reg [4:0]wb_tgt_out_1, output reg [31:0]wb_result_out_1,
-    output we2, output reg [4:0]wb_tgt_out_2, output reg [31:0]wb_result_out_2,
+    output we1, output [4:0]wb_tgt_out_1, output [31:0]wb_result_out_1,
+    output we2, output [4:0]wb_tgt_out_2, output [31:0]wb_result_out_2,
     output wb_no_alias_1, output wb_no_alias_2,
-    output reg wb_tgts_cr_out,
+    output wb_tgts_cr_out, output wb_is_load_out,
     output exc_in_wb, output interrupt_in_wb, output rfe_in_wb, output rfi_in_wb,
     output tlb_exc_in_wb,
     output halt_out, output sleep_out
   );
-
-  initial begin
-    wb_tgt_out_1 = 5'd0;
-    wb_tgt_out_2 = 5'd0;
-    wb_tgts_cr_out = 1'b0;
-  end
 
   assign exc_in_wb = (exc_in != 8'd0) && !bubble_in;
   assign interrupt_in_wb = (exc_in[7:4] == 4'hf) && !bubble_in;
@@ -53,15 +47,15 @@ module writeback(input clk, input clk_en, input halt, input bubble_in,
   assign wb_no_alias_1 = crmov_gpr_write;
   assign wb_no_alias_2 = 1'b0;
 
-  always @(posedge clk) begin
-    if (~halt && clk_en) begin
-      wb_tgt_out_1 <= tgt_in_1;
-      wb_tgt_out_2 <= tgt_in_2;
-      wb_result_out_1 <= result_out_1;
-      wb_result_out_2 <= result_out_2;
-      wb_tgts_cr_out <= tgts_cr && !bubble_in && !exc_in_wb;
-    end
-  end
+  // Writeback payload must stay cycle-aligned with `we1/we2`.
+  // If target/data are registered while enables are combinational, regfile writes
+  // can target the wrong destination register on the same cycle.
+  assign wb_tgt_out_1 = tgt_in_1;
+  assign wb_tgt_out_2 = tgt_in_2;
+  assign wb_result_out_1 = result_out_1;
+  assign wb_result_out_2 = result_out_2;
+  assign wb_tgts_cr_out = tgts_cr && !bubble_in && !exc_in_wb;
+  assign wb_is_load_out = is_load && !bubble_in && !exc_in_wb;
 
   // Load lane extraction follows effective address byte offset.
   wire [31:0]masked_mem_result = 

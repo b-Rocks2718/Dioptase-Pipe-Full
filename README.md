@@ -178,7 +178,9 @@ make verilator
 Run Verilator model:
 
 ```bash
-./obj_dir/dioptase +hex=<file.hex> [--max-cycles=<N>] [--vga] [--uart]
+./obj_dir/dioptase +hex=<file.hex> [--max-cycles=<N>] [--vga] [--uart] [--sd0 <file.bin>] [--sd1 <file.bin>]
+# shorthand also works:
+./obj_dir/dioptase <file.hex> [--max-cycles=<N>] [--vga] [--uart] [--sd0 <file.bin>] [--sd1 <file.bin>]
 ```
 
 Verilator flags:
@@ -187,6 +189,8 @@ Verilator flags:
 - `--uart`: route keyboard input to UART path instead of PS/2.
 - `--max-cycles=<N>`: cycle cap (`0` means unlimited). Enabling `--vga` also
   removes the default cycle cap.
+- `--sd0 <file.bin>`: preload SD card 0 from a raw block image.
+- `--sd1 <file.bin>`: preload SD card 1 from a raw block image.
 
 ## Tests
 

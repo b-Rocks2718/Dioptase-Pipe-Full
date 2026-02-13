@@ -5,4 +5,5 @@
 *.vcd
 *.vvp
 *.bit
+*.log
 obj_dir/

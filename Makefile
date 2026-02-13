@@ -6,6 +6,10 @@ HEX_DIR					 := tests/hex
 OUT_DIR      		 := tests/out
 SD_DMA_TB			 := tests/sd_dma_controller_tb.v
 SD_DMA_TB_VVP	 := $(OUT_DIR)/sd_dma_controller_tb.vvp
+SD_SPI_TB			 := tests/sd_spi_controller_tb.v
+SD_SPI_TB_VVP	 := $(OUT_DIR)/sd_spi_controller_tb.vvp
+CACHE_TB       := tests/cache_tb.v
+CACHE_TB_VVP   := $(OUT_DIR)/cache_tb.vvp
 
 # Tools
 ASSEMBLER    := ../../Dioptase-Assembler/build/debug/basm
@@ -18,10 +22,14 @@ VVP          := vvp
 
 # Simulation limits
 CYCLE_LIMIT  ?= 10000
+SD_CYCLE_LIMIT ?= 200000
 EMULATOR_ARGS ?= --max-cycles=$(CYCLE_LIMIT)
 
 # All test sources
 VERILOG_SRCS   := $(wildcard $(SRC_DIR)/*.v)
+SIM_SRCS := $(VERILOG_SRCS)
+# Exclude non-top helper modules that are not instantiated by dioptase.v.
+# Leaving these in causes Verilator MULTITOP failures.
 VERILATOR_EXCLUDE := $(SRC_DIR)/clock.v $(SRC_DIR)/dioptase.v
 VERILATOR_SRCS := $(SRC_DIR)/dioptase.v $(filter-out $(VERILATOR_EXCLUDE), $(VERILOG_SRCS)) extern/vgasim/bench/cpp/vgasim.cpp sim_main.cpp
 PKG_CONFIG_BIN := $(shell command -v pkg-config 2>/dev/null)
@@ -48,8 +56,7 @@ EMU_TESTS_EXCLUDE := $(EMU_TESTS_DIR)/cdiv.s $(EMU_TESTS_DIR)/colors.s \
 											$(EMU_TESTS_DIR)/multicore_colors.s $(EMU_TESTS_DIR)/pixels.s \
 											$(EMU_TESTS_DIR)/vblank.s $(EMU_TESTS_DIR)/tile_colors.s \
 											$(EMU_TESTS_DIR)/multicore_atomic.s $(EMU_TESTS_DIR)/multicore_ipi.s \
-											$(EMU_TESTS_DIR)/multicore_race.s \
-											$(EMU_TESTS_DIR)/sdcard.s $(EMU_TESTS_DIR)/sdcard1.s
+											$(EMU_TESTS_DIR)/multicore_race.s 
 EMU_TESTS_SRCS    := $(filter-out $(EMU_TESTS_EXCLUDE),$(EMU_TESTS_ALL))
 EMU_TESTS_SRCS_ICARUS := $(filter-out $(SDCARD_TEST),$(EMU_TESTS_SRCS))
 ASM_SRCS         := $(CPU_TESTS_SRCS) $(EMU_TESTS_SRCS)
@@ -71,6 +78,18 @@ $(SD_DMA_TB_VVP): $(SRC_DIR)/sd_dma_controller.v $(SD_DMA_TB) | dirs
 sd-dma-test: $(SD_DMA_TB_VVP)
 	$(VVP) $(SD_DMA_TB_VVP)
 
+$(SD_SPI_TB_VVP): $(SRC_DIR)/sd_spi_controller.v $(SD_SPI_TB) | dirs
+	$(IVERILOG) -g2012 -o $@ $^
+
+sd-spi-test: $(SD_SPI_TB_VVP)
+	$(VVP) $(SD_SPI_TB_VVP)
+
+$(CACHE_TB_VVP): $(SRC_DIR)/cache.v $(SRC_DIR)/ram.v $(CACHE_TB) | dirs
+	$(IVERILOG) -g2012 -o $@ $^
+
+cache-test: $(CACHE_TB_VVP)
+	$(VVP) $(CACHE_TB_VVP)
+
 # Keep the release emulator binary fresh so CPU-vs-emulator comparisons use the
 # same TLB/memory behavior as the current source tree.
 $(EMULATOR): $(EMULATOR_SRCS)
@@ -90,7 +109,7 @@ verilator: check-verilator-deps $(VERILATOR_SRCS)
     -o dioptase
 
 # Compile Verilog into sim.vvp once
-sim.vvp: $(wildcard $(SRC_DIR)/*.v)
+sim.vvp: $(SIM_SRCS)
 	$(IVERILOG) -DSIMULATION -o sim.vvp $^
 
 $(OUT_DIR)/%.vcd: $(HEX_DIR)/%.hex sim.vvp | dirs
@@ -123,14 +142,19 @@ test: $(ASM_SRCS) $(VERILOG_SRCS) $(EMULATOR) | dirs
 	RED="\033[0;31m"; \
 	YELLOW="\033[0;33m"; \
 	NC="\033[0m"; \
+	set -e; \
 	passed=0; total=$(TOTAL); \
-	$(IVERILOG) -DSIMULATION -o sim.vvp $(wildcard $(SRC_DIR)/*.v) ; \
+	$(IVERILOG) -DSIMULATION -o sim.vvp $(SIM_SRCS) ; \
 	echo "Running $(words $(EMU_TESTS_SRCS)) instruction tests:"; \
 	for t in $(basename $(notdir $(EMU_TESTS_SRCS))); do \
 	  printf "%s %-20s " '-' "$$t"; \
+	  limit=$(CYCLE_LIMIT); \
+	  if [ "$$t" = "sdcard" ] || [ "$$t" = "sdcard1" ]; then \
+	    limit=$(SD_CYCLE_LIMIT); \
+	  fi; \
 	  $(ASSEMBLER) $(EMU_TESTS_DIR)/$$t.s -o $(HEX_DIR)/$$t.hex -kernel && \
-	  $(EMULATOR) $(EMULATOR_ARGS) $(HEX_DIR)/$$t.hex | sed '/^Warning:/d' > $(OUT_DIR)/$$t.emuout && \
-	  $(VVP) sim.vvp +hex=$(HEX_DIR)/$$t.hex +vcd=$(OUT_DIR)/$$t.vcd +cycle_limit=$(CYCLE_LIMIT) 2>/dev/null \
+	  $(EMULATOR) --max-cycles=$$limit $(HEX_DIR)/$$t.hex | sed '/^Warning:/d' > $(OUT_DIR)/$$t.emuout && \
+	  $(VVP) sim.vvp +hex=$(HEX_DIR)/$$t.hex +vcd=$(OUT_DIR)/$$t.vcd +cycle_limit=$$limit 2>/dev/null \
   		| sed '/^VCD info:/d;/\$$finish called/d' > $(OUT_DIR)/$$t.vout ; \
 	  if cmp --silent $(OUT_DIR)/$$t.emuout $(OUT_DIR)/$$t.vout; then \
 	    echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
@@ -161,6 +185,7 @@ test-verilator: check-verilator-deps $(ASM_SRCS) $(VERILOG_SRCS) $(EMULATOR) | d
 	RED="\033[0;31m"; \
 	YELLOW="\033[0;33m"; \
 	NC="\033[0m"; \
+	set -e; \
 	passed=0; total=$(TOTAL); \
 	verilator --cc --exe --build $(VERILATOR_SRCS) \
     -CFLAGS "$(VERILATOR_CFLAGS)" -LDFLAGS "$(VERILATOR_LDFLAGS)" \
@@ -168,9 +193,13 @@ test-verilator: check-verilator-deps $(ASM_SRCS) $(VERILOG_SRCS) $(EMULATOR) | d
 	echo "Running $(words $(EMU_TESTS_SRCS)) instruction tests:"; \
 	for t in $(basename $(notdir $(EMU_TESTS_SRCS))); do \
 	  printf "%s %-20s " '-' "$$t"; \
+	  limit=$(CYCLE_LIMIT); \
+	  if [ "$$t" = "sdcard" ] || [ "$$t" = "sdcard1" ]; then \
+	    limit=$(SD_CYCLE_LIMIT); \
+	  fi; \
 	  $(ASSEMBLER) $(EMU_TESTS_DIR)/$$t.s -o $(HEX_DIR)/$$t.hex -kernel && \
-	  $(EMULATOR) $(EMULATOR_ARGS) $(HEX_DIR)/$$t.hex | sed '/^Warning:/d' > $(OUT_DIR)/$$t.emuout && \
-	  ./obj_dir/dioptase +hex=$(HEX_DIR)/$$t.hex --noinfo --max-cycles=$(CYCLE_LIMIT) 2>/dev/null | head -n 1 > $(OUT_DIR)/$$t.vout ; \
+	  $(EMULATOR) --max-cycles=$$limit $(HEX_DIR)/$$t.hex | sed '/^Warning:/d' > $(OUT_DIR)/$$t.emuout && \
+	  ./obj_dir/dioptase +hex=$(HEX_DIR)/$$t.hex --noinfo --max-cycles=$$limit 2>/dev/null | head -n 1 > $(OUT_DIR)/$$t.vout ; \
 	  if cmp --silent $(OUT_DIR)/$$t.emuout $(OUT_DIR)/$$t.vout; then \
 	    echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
 	  else \
@@ -193,7 +222,7 @@ test-verilator: check-verilator-deps $(ASM_SRCS) $(VERILOG_SRCS) $(EMULATOR) | d
 	echo; \
 	echo "Summary: $$passed / $$total tests passed."
 
-.PHONY: test sd-dma-test dirs clean
+.PHONY: test sd-dma-test sd-spi-test cache-test dirs clean
 
 clean:
 	rm -f $(OUT_DIR)/*

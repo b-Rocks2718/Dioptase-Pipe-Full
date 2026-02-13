@@ -1,7 +1,9 @@
 `timescale 1ps/1ps
 
-module mem(input clk, input clk_en,
-    input [26:0]raddr0, output reg [31:0]rdata0,
+module mem(input clk, input clk_en, input pipe_clk_en,
+    input [26:0]raddr0, input [31:0]rtag0, output reg [31:0]rdata0, output reg [31:0]rdata0_tag,
+    input icache_req_valid,
+    output icache_issue_accepted,
     input ren, input [26:0]raddr1, output reg [31:0]rdata1,
     input [3:0]wen, input [26:0]waddr, input [31:0]wdata,
     output ps2_ren, input [15:0]ps2_data_in,
@@ -9,7 +11,9 @@ module mem(input clk, input clk_en,
     output reg [7:0]uart_tx_data, output uart_tx_wen,
     input [7:0]uart_rx_data, output uart_rx_ren,
     output sd_spi_cs, output sd_spi_clk, output sd_spi_mosi, input sd_spi_miso,
+    output sd1_spi_cs, output sd1_spi_clk, output sd1_spi_mosi, input sd1_spi_miso,
     output [15:0]interrupts,
+    output icache_stall, output dcache_stall,
     output [31:0]clock_divider
 );
     // Display memory map (physical):
@@ -95,17 +99,57 @@ module mem(input clk, input clk_en,
     localparam SPRITE_SCALE_BASE = 27'h7FE5B60;
     localparam SPRITE_SCALE_END = 27'h7FE5B70;
 
-    // Current simple SD controller register surface.
-    localparam SD_START_REG = 27'h7FE581C;
-    localparam SD_CMD_BASE = 27'h7FE5810;
-    localparam SD_CMD_END = 27'h7FE5815;
-    localparam SD_DATA_BASE = 27'h7FE5820;
-    localparam SD_DATA_END = 27'h7FE583F;
+    // SD DMA MMIO register surface (SD card 0 and SD card 1 windows).
+    localparam SD0_DMA_MEM_ADDR_REG = 27'h7FE5810;
+    localparam SD0_DMA_SD_BLOCK_REG = 27'h7FE5814;
+    localparam SD0_DMA_LEN_REG = 27'h7FE5818;
+    localparam SD0_DMA_CTRL_REG = 27'h7FE581C;
+    localparam SD0_DMA_STATUS_REG = 27'h7FE5820;
+    localparam SD0_DMA_ERR_REG = 27'h7FE5824;
 
-    // Word-addressed RAM backing 0x0000000 .. RAM_END-1.
-    localparam [24:0] RAM_WORDS = RAM_END[26:2];
-    localparam [24:0] RAM_LAST_WORD = RAM_WORDS - 25'd1;
-    (* ram_style = "block" *) reg [31:0]ram[0:RAM_LAST_WORD];
+    localparam SD1_DMA_MEM_ADDR_REG = 27'h7FE5828;
+    localparam SD1_DMA_SD_BLOCK_REG = 27'h7FE582C;
+    localparam SD1_DMA_LEN_REG = 27'h7FE5830;
+    localparam SD1_DMA_CTRL_REG = 27'h7FE5834;
+    localparam SD1_DMA_STATUS_REG = 27'h7FE5838;
+    localparam SD1_DMA_ERR_REG = 27'h7FE583C;
+
+    localparam SD_DMA_MMIO_END = 27'h7FE583F;
+
+    localparam [7:0] SD_SPI_CMD0 = 8'h40;
+    localparam [7:0] SD_SPI_CMD17 = 8'h51;
+    localparam [7:0] SD_SPI_CMD24 = 8'h58;
+    localparam [7:0] SD_SPI_CMD55 = 8'h77;
+    localparam [7:0] SD_SPI_CMD58 = 8'h7A;
+    localparam [7:0] SD_SPI_ACMD41 = 8'h69;
+    localparam [7:0] SD_SPI_R1_IDLE = 8'h01;
+    localparam [7:0] SD_SPI_R1_READY = 8'h00;
+    localparam [7:0] SD_SPI_R1_ILLEGAL = 8'h05;
+    localparam [7:0] SD_SPI_INIT_MAX_ACMD41_ATTEMPTS = 8'd32;
+    localparam [2:0] SD_INIT_STATE_IDLE = 3'd0;
+    localparam [2:0] SD_INIT_STATE_WAIT_CMD0 = 3'd1;
+    localparam [2:0] SD_INIT_STATE_WAIT_CMD8 = 3'd2;
+    localparam [2:0] SD_INIT_STATE_WAIT_CMD55 = 3'd3;
+    localparam [2:0] SD_INIT_STATE_WAIT_ACMD41 = 3'd4;
+    localparam [2:0] SD_INIT_STATE_WAIT_CMD58 = 3'd5;
+    localparam integer RAM_WORD_ADDR_BITS = 25; // Covers 0x0000000..0x7FBD000 RAM window.
+    localparam integer RAM_ACCESS_LATENCY = 1;  // Keep ISA tests within default cycle budget.
+    // Debug watchpoints for early-kernel scheduler state (collatz image).
+    // Enabled only with +sched_watch so normal runs are unaffected.
+    localparam [26:0] SCHED_WATCH_N_ACTIVE = 27'h0912D4;
+    localparam [26:0] SCHED_WATCH_BOOTSTRAPPING = 27'h090E18;
+    localparam [26:0] SCHED_WATCH_CURRENT_JIFFIES = 27'h090AD8;
+    // Barrier debug watchpoint for collatz image start_barrier.
+    // Enabled only with +barrier_watch.
+    localparam [26:0] BARRIER_WATCH_START_BARRIER = 27'h090A8C;
+    // Queue debug ranges for collatz scheduler state.
+    // Enabled only with +queue_watch.
+    localparam [26:0] QUEUE_WATCH_SLEEPQ_START = 27'h091040;
+    localparam [26:0] QUEUE_WATCH_SLEEPQ_END = 27'h09104C;
+    localparam [26:0] QUEUE_WATCH_READYQ_START = 27'h0912D8;
+    localparam [26:0] QUEUE_WATCH_READYQ_END = 27'h0912E8;
+    localparam [26:0] QUEUE_WATCH_REAPERQ_START = 27'h0912C0;
+    localparam [26:0] QUEUE_WATCH_REAPERQ_END = 27'h0912D0;
 
     // Sprite backing storage (sprites 0..15).
     reg [31:0]sprite_0_data[0:16'h1ff];
@@ -130,17 +174,8 @@ module mem(input clk, input clk_en,
     (* ram_style = "block" *) reg [31:0]frame_buffer[0:16'h095f];
     (* ram_style = "block" *) reg [31:0]pixel_buffer[0:16'h95ff];
 
-    reg [1023:0] hexfile; // buffer for filename
-
     integer i;
     initial begin
-        if (!$value$plusargs("hex=%s", hexfile)) begin
-            $display("ERROR: no +hex=<file> argument given!");
-            $finish;
-        end
-
-        $readmemh(hexfile, ram);  // mem is your instruction/data memory
-
         for (i = 0; i < 16'h200; i = i + 1) begin
           sprite_0_data[i] = 32'hf000f000;
           sprite_1_data[i] = 32'hf000f000;
@@ -173,21 +208,50 @@ module mem(input clk, input clk_en,
         for (i = 0; i < 16; i = i + 1) begin
           sprite_scale_regs[i] = 8'd0;
         end
-        for (i = 0; i < 6; i = i + 1) begin
-          sd_cmd_buffer[i] = 8'h00;
-        end
-        for (i = 0; i < 512; i = i + 1) begin
-          sd_data_buffer[i] = 8'h00;
-        end
-        sd_start_pending = 1'b0;
-        sd_start_strobe = 1'b0;
-        sd_irq_pending = 1'b0;
+        sd0_spi_cmd_buffer = 48'd0;
+        sd0_spi_data_buffer = 4096'd0;
+        sd0_spi_start_strobe = 1'b0;
+        sd0_spi_launch_sent = 1'b0;
+        sd0_irq_pending = 1'b0;
+        sd0_dma_done_prev = 1'b0;
+        sd0_dma_mem_addr_reg = 32'd0;
+        sd0_dma_block_reg = 32'd0;
+        sd0_dma_len_reg = 32'd0;
+        sd0_dma_ctrl_write_pulse = 1'b0;
+        sd0_dma_ctrl_write_data = 32'd0;
+        sd0_dma_status_clear_pulse = 1'b0;
+        sd0_init_state = SD_INIT_STATE_IDLE;
+        sd0_init_acmd41_attempts = 8'd0;
+        sd0_card_high_capacity = 1'b0;
+        sd0_dma_sd_ready_pulse = 1'b0;
+        sd0_dma_mem_ready_pulse = 1'b0;
+        sd0_dma_mem_data_in = 32'd0;
+
+        sd1_spi_cmd_buffer = 48'd0;
+        sd1_spi_data_buffer = 4096'd0;
+        sd1_spi_start_strobe = 1'b0;
+        sd1_spi_launch_sent = 1'b0;
+        sd1_irq_pending = 1'b0;
+        sd1_dma_done_prev = 1'b0;
+        sd1_dma_mem_addr_reg = 32'd0;
+        sd1_dma_block_reg = 32'd0;
+        sd1_dma_len_reg = 32'd0;
+        sd1_dma_ctrl_write_pulse = 1'b0;
+        sd1_dma_ctrl_write_data = 32'd0;
+        sd1_dma_status_clear_pulse = 1'b0;
+        sd1_init_state = SD_INIT_STATE_IDLE;
+        sd1_init_acmd41_attempts = 8'd0;
+        sd1_card_high_capacity = 1'b0;
+        sd1_dma_sd_ready_pulse = 1'b0;
+        sd1_dma_mem_ready_pulse = 1'b0;
+        sd1_dma_mem_data_in = 32'd0;
         raddr0_buf = 27'd0;
         raddr1_buf = 27'd0;
         waddr_buf = 27'd0;
         ren_buf = 1'b0;
         wen_buf = 4'd0;
         ram_data0_out = 32'd0;
+        ram_data0_tag_out = 32'd0;
         ram_data1_out = 32'd0;
         tilemap_data0_out = 32'd0;
         tilemap_data1_out = 32'd0;
@@ -227,6 +291,7 @@ module mem(input clk, input clk_en,
         sprite_15_data0_out = 32'd0;
         sprite_15_data1_out = 32'd0;
         rdata0 = 32'd0;
+        rdata0_tag = 32'd0;
         rdata1 = 32'd0;
         uart_tx_data = 8'd0;
         pixel_scale_reg = 8'd0;
@@ -234,6 +299,7 @@ module mem(input clk, input clk_en,
         pixel_hscroll_reg = 16'd0;
         clock_div_reg = 32'd0;
         pit_cfg_reg = 32'd0;
+        pit_irq_count = 32'd0;
         vga_frame_count = 32'd0;
         in_vblank_prev = 1'b0;
         vga_vblank_irq = 1'b0;
@@ -246,6 +312,22 @@ module mem(input clk, input clk_en,
         display_bg_pixel_x = 10'd0;
         display_screen_x = 10'd0;
         display_screen_y = 10'd0;
+        icache_req_pending = 1'b0;
+        icache_req_addr = 27'd0;
+        icache_req_tag = 32'd0;
+        dcache_req_pending = 1'b0;
+        dcache_req_is_write = 1'b0;
+        dcache_req_src = DCACHE_REQ_SRC_CPU;
+        dcache_req_we = 4'd0;
+        dcache_req_addr = 27'd0;
+        dcache_req_wdata = 32'd0;
+        dma_write_req_pending = 1'b0;
+        dma_write_req_src = DCACHE_REQ_SRC_CPU;
+        dma_write_req_addr = 27'd0;
+        dma_write_req_wdata = 32'd0;
+        icache_inv_pulse = 1'b0;
+        dcache_inv_pulse = 1'b0;
+        dma_inv_addr = 27'd0;
     end
 
     reg [26:0]raddr0_buf;
@@ -256,6 +338,7 @@ module mem(input clk, input clk_en,
     reg [3:0]wen_buf;
 
     reg [31:0]ram_data0_out;
+    reg [31:0]ram_data0_tag_out;
     reg [31:0]ram_data1_out;
     reg [31:0]tilemap_data0_out = 0;
     reg [31:0]tilemap_data1_out;
@@ -304,6 +387,8 @@ module mem(input clk, input clk_en,
     reg [15:0]pixel_hscroll_reg = 0;
     reg [31:0]clock_div_reg = 0;
     reg [31:0]pit_cfg_reg = 0;
+    // Debug-only counter for PIT pulses while +sched_watch is enabled.
+    reg [31:0]pit_irq_count = 0;
     reg [31:0]vga_frame_count = 0;
     reg in_vblank_prev = 1'b0;
     reg vga_vblank_irq = 1'b0;
@@ -313,8 +398,6 @@ module mem(input clk, input clk_en,
     reg [26:0]scroll_word_base;
     reg [26:0]scroll_byte_addr;
     reg [7:0]scroll_byte_data;
-    reg [8:0]sd_byte_offset;
-    integer sd_copy_idx;
 
     function [7:0] select_lane_byte;
         input [31:0] data;
@@ -428,44 +511,113 @@ module mem(input clk, input clk_en,
     reg use_sprite_14 = 0;
     reg use_sprite_15 = 0;
 
-    reg [7:0]sd_cmd_buffer[0:5];
-    reg [7:0]sd_data_buffer[0:511];
-    reg sd_start_pending = 1'b0;
-    reg sd_start_strobe = 1'b0;
-    reg sd_irq_pending = 1'b0;
-    wire [47:0]sd_cmd_buffer_out;
-    wire sd_cmd_buffer_out_valid;
-    wire [4095:0]sd_data_buffer_out;
-    wire sd_data_buffer_out_valid;
-    wire sd_busy;
-    wire sd_interrupt;
-    wire sd_spi_cs_int;
-    wire sd_spi_clk_int;
-    wire sd_spi_mosi_int;
-    wire [47:0]sd_cmd_buffer_in_flat;
-    wire [4095:0]sd_data_buffer_in_flat;
-    wire [7:0]sd_cmd_buffer_out_bytes[0:5];
-    wire [7:0]sd_data_buffer_out_bytes[0:511];
-    genvar sd_cmd_i;
-    generate
-        for (sd_cmd_i = 0; sd_cmd_i < 6; sd_cmd_i = sd_cmd_i + 1) begin : gen_sd_cmd_buffers
-            assign sd_cmd_buffer_in_flat[sd_cmd_i*8 +: 8] = sd_cmd_buffer[sd_cmd_i];
-            assign sd_cmd_buffer_out_bytes[sd_cmd_i] = sd_cmd_buffer_out[sd_cmd_i*8 +: 8];
-        end
-    endgenerate
+    // SD DMA register mirrors and per-device launch state.
+    reg [31:0]sd0_dma_mem_addr_reg = 32'd0;
+    reg [31:0]sd0_dma_block_reg = 32'd0;
+    reg [31:0]sd0_dma_len_reg = 32'd0;
+    reg sd0_dma_ctrl_write_pulse = 1'b0;
+    reg [31:0]sd0_dma_ctrl_write_data = 32'd0;
+    reg sd0_dma_status_clear_pulse = 1'b0;
+    reg [47:0]sd0_spi_cmd_buffer = 48'd0;
+    reg [4095:0]sd0_spi_data_buffer = 4096'd0;
+    reg sd0_spi_start_strobe = 1'b0;
+    reg sd0_spi_launch_sent = 1'b0;
+    reg sd0_irq_pending = 1'b0;
+    reg sd0_dma_done_prev = 1'b0;
+    reg [2:0]sd0_init_state = SD_INIT_STATE_IDLE;
+    reg [7:0]sd0_init_acmd41_attempts = 8'd0;
+    reg sd0_card_high_capacity = 1'b0;
+    reg sd0_dma_sd_ready_pulse = 1'b0;
+    reg sd0_dma_mem_ready_pulse = 1'b0;
+    reg [31:0]sd0_dma_mem_data_in = 32'd0;
 
-    // PS/2 stream occupies 0x...5800-0x...5801; reading either byte consumes.
-    assign ps2_ren = (PS2_REG <= raddr1_buf) && (raddr1_buf < (PS2_REG + 27'd2)) && ren_buf;
-    assign uart_tx_wen = (waddr_buf[26:2] == UART_TX_REG[26:2]) && wen_buf[waddr_buf[1:0]];
-    assign uart_rx_ren = (raddr1_buf == UART_RX_REG) && ren_buf;
+    reg [31:0]sd1_dma_mem_addr_reg = 32'd0;
+    reg [31:0]sd1_dma_block_reg = 32'd0;
+    reg [31:0]sd1_dma_len_reg = 32'd0;
+    reg sd1_dma_ctrl_write_pulse = 1'b0;
+    reg [31:0]sd1_dma_ctrl_write_data = 32'd0;
+    reg sd1_dma_status_clear_pulse = 1'b0;
+    reg [47:0]sd1_spi_cmd_buffer = 48'd0;
+    reg [4095:0]sd1_spi_data_buffer = 4096'd0;
+    reg sd1_spi_start_strobe = 1'b0;
+    reg sd1_spi_launch_sent = 1'b0;
+    reg sd1_irq_pending = 1'b0;
+    reg sd1_dma_done_prev = 1'b0;
+    reg [2:0]sd1_init_state = SD_INIT_STATE_IDLE;
+    reg [7:0]sd1_init_acmd41_attempts = 8'd0;
+    reg sd1_card_high_capacity = 1'b0;
+    reg sd1_dma_sd_ready_pulse = 1'b0;
+    reg sd1_dma_mem_ready_pulse = 1'b0;
+    reg [31:0]sd1_dma_mem_data_in = 32'd0;
 
-    genvar sd_data_i;
-    generate
-        for (sd_data_i = 0; sd_data_i < 512; sd_data_i = sd_data_i + 1) begin : gen_sd_data_buffers
-            assign sd_data_buffer_in_flat[sd_data_i*8 +: 8] = sd_data_buffer[sd_data_i];
-            assign sd_data_buffer_out_bytes[sd_data_i] = sd_data_buffer_out[sd_data_i*8 +: 8];
-        end
-    endgenerate
+    wire [47:0]sd0_cmd_buffer_out;
+    wire sd0_cmd_buffer_out_valid;
+    wire [4095:0]sd0_data_buffer_out;
+    wire sd0_data_buffer_out_valid;
+    wire sd0_busy;
+    wire sd0_interrupt;
+    wire sd0_spi_cs_int;
+    wire sd0_spi_clk_int;
+    wire sd0_spi_mosi_int;
+
+    wire [47:0]sd1_cmd_buffer_out;
+    wire sd1_cmd_buffer_out_valid;
+    wire [4095:0]sd1_data_buffer_out;
+    wire sd1_data_buffer_out_valid;
+    wire sd1_busy;
+    wire sd1_interrupt;
+    wire sd1_spi_cs_int;
+    wire sd1_spi_clk_int;
+    wire sd1_spi_mosi_int;
+
+    wire [31:0]sd0_dma_ctrl;
+    wire [31:0]sd0_dma_status;
+    wire [31:0]sd0_dma_error_code;
+    wire [31:0]sd0_dma_mem_request_addr;
+    wire [31:0]sd0_dma_mem_request_data;
+    wire sd0_dma_mem_request_read;
+    wire sd0_dma_mem_request_write;
+    wire [4095:0]sd0_dma_sd_data_block_out;
+    wire sd0_dma_waiting_for_sd_ready;
+    wire sd0_dma_init_waiting_for_sd_ready;
+    wire [31:0]sd0_dma_current_sd_block_addr;
+    wire sd0_dma_mem_req_active =
+      (sd0_dma_mem_request_read || sd0_dma_mem_request_write) &&
+      !sd0_dma_waiting_for_sd_ready &&
+      !sd0_dma_mem_ready_pulse;
+    // CMD17/CMD24 use block addressing for SDHC and byte addressing otherwise.
+    wire [31:0] sd0_spi_cmd_arg =
+      sd0_card_high_capacity ? sd0_dma_current_sd_block_addr :
+      (sd0_dma_current_sd_block_addr << 9);
+
+    wire [31:0]sd1_dma_ctrl;
+    wire [31:0]sd1_dma_status;
+    wire [31:0]sd1_dma_error_code;
+    wire [31:0]sd1_dma_mem_request_addr;
+    wire [31:0]sd1_dma_mem_request_data;
+    wire sd1_dma_mem_request_read;
+    wire sd1_dma_mem_request_write;
+    wire [4095:0]sd1_dma_sd_data_block_out;
+    wire sd1_dma_waiting_for_sd_ready;
+    wire sd1_dma_init_waiting_for_sd_ready;
+    wire [31:0]sd1_dma_current_sd_block_addr;
+    wire sd1_dma_mem_req_active =
+      (sd1_dma_mem_request_read || sd1_dma_mem_request_write) &&
+      !sd1_dma_waiting_for_sd_ready &&
+      !sd1_dma_mem_ready_pulse;
+    wire [31:0] sd1_spi_cmd_arg =
+      sd1_card_high_capacity ? sd1_dma_current_sd_block_addr :
+      (sd1_dma_current_sd_block_addr << 9);
+
+    // PS/2/UART MMIO side effects must happen exactly once per pipeline
+    // advance, not once per base clock. D-cache stalls replay an older memory
+    // slot; replaying side effects would duplicate MMIO.
+    assign ps2_ren = pipe_clk_en &&
+      (PS2_REG <= raddr1_buf) && (raddr1_buf < (PS2_REG + 27'd2)) && ren_buf;
+    assign uart_tx_wen = pipe_clk_en &&
+      (waddr_buf[26:2] == UART_TX_REG[26:2]) && wen_buf[waddr_buf[1:0]];
+    assign uart_rx_ren = pipe_clk_en &&
+      (raddr1_buf == UART_RX_REG) && ren_buf;
 
     reg [31:0]display_framebuffer_out;
     reg display_tile_entry_sel;
@@ -476,6 +628,84 @@ module mem(input clk, input clk_en,
     reg [9:0]display_bg_pixel_x;
     reg [9:0]display_screen_x;
     reg [9:0]display_screen_y;
+    // RAM-window accesses are cache-backed and can stall pipeline advancement.
+    reg icache_req_pending;
+    reg [26:0]icache_req_addr;
+    reg [31:0]icache_req_tag;
+    wire [31:0]icache_data_out;
+    wire icache_success;
+
+    reg dcache_req_pending;
+    reg dcache_req_is_write;
+    reg [1:0]dcache_req_src;
+    reg [3:0]dcache_req_we;
+    reg [26:0]dcache_req_addr;
+    reg [31:0]dcache_req_wdata;
+    // SD->RAM DMA writes bypass dcache and go directly to backing RAM so
+    // instruction fetch observes freshly loaded kernel bytes without waiting
+    // for dcache dirty eviction (there is no I/D coherence protocol).
+    reg dma_write_req_pending;
+    reg [1:0]dma_write_req_src;
+    reg [26:0]dma_write_req_addr;
+    reg [31:0]dma_write_req_wdata;
+    reg icache_inv_pulse;
+    reg dcache_inv_pulse;
+    reg [26:0] dma_inv_addr;
+    wire [31:0]dcache_data_out;
+    wire dcache_success;
+    localparam [1:0] DCACHE_REQ_SRC_CPU = 2'd0;
+    localparam [1:0] DCACHE_REQ_SRC_SD0 = 2'd1;
+    localparam [1:0] DCACHE_REQ_SRC_SD1 = 2'd2;
+    wire cpu_dcache_req_now = dcache_ram_write_access || dcache_ram_read_access;
+    // CPU cache-side request issue must only occur when the pipeline memory slot
+    // advances. This prevents replaying the same architectural load/store while
+    // pipe_clk_en is low due to a cache stall.
+    wire cpu_dcache_issue_now = pipe_clk_en && cpu_dcache_req_now;
+    wire dcache_req_blocks_cpu = dcache_req_pending && (dcache_req_src != DCACHE_REQ_SRC_CPU);
+    wire dma_write_req_blocks_cpu = dma_write_req_pending && cpu_dcache_req_now;
+    wire icache_ram_req;
+    wire icache_ram_we;
+    wire [3:0]icache_ram_be;
+    wire [26:0]icache_ram_addr;
+    wire [31:0]icache_ram_wdata;
+    wire [31:0]icache_ram_rdata;
+    wire icache_ram_ready;
+    wire icache_ram_busy;
+    wire icache_ram_error_oob;
+    wire dcache_ram_req;
+    wire dcache_ram_we;
+    wire [3:0]dcache_ram_be;
+    wire [26:0]dcache_ram_addr;
+    wire [31:0]dcache_ram_wdata;
+    wire [31:0]dcache_ram_rdata;
+    wire dcache_ram_ready;
+    wire dcache_ram_busy;
+    wire dcache_ram_error_oob;
+    wire shared_ram_req;
+    wire shared_ram_we;
+    wire [3:0]shared_ram_be;
+    wire [26:0]shared_ram_addr;
+    wire [31:0]shared_ram_wdata;
+    wire [31:0]shared_ram_rdata;
+    wire shared_ram_ready;
+    wire shared_ram_busy;
+    wire shared_ram_error_oob;
+
+    wire icache_ram_access = (raddr0 < RAM_END);
+    wire dcache_ram_read_access = ren && (raddr1 < RAM_END);
+    wire dcache_ram_write_access = (|wen) && (waddr < RAM_END);
+    // A fetch request is accepted only when the shared cache issue slot is
+    // free and no higher-priority dcache request is competing this cycle.
+    assign icache_issue_accepted =
+      !icache_req_pending && !dcache_req_pending && !dma_write_req_pending && pipe_clk_en &&
+      !cpu_dcache_issue_now && icache_ram_access && icache_req_valid;
+    // I-cache miss/in-flight requests stall the pipeline globally.
+    // Same-cycle issue arbitration is handled in cpu.v fetch issue-stop logic.
+    assign icache_stall = icache_req_pending;
+    assign dcache_stall =
+      (dcache_req_pending && (dcache_req_src == DCACHE_REQ_SRC_CPU)) ||
+      (dcache_req_blocks_cpu && cpu_dcache_req_now) ||
+      dma_write_req_blocks_cpu;
     wire vga_in_hblank = (pixel_x_in >= 10'd640);
     wire vga_in_vblank = (pixel_y_in >= 10'd480);
 
@@ -506,9 +736,6 @@ module mem(input clk, input clk_en,
       {2'b0, display_tile, 6'b0} + {10'b0, display_tile_pixel_y[2:0], 3'b0} + {13'b0, display_tile_pixel_x[2:0]};
     wire display_tile_half_sel = tile_pixel_idx[0];
     wire [12:0] display_tile_word_idx = tile_pixel_idx[13:1];
-    wire [24:0] ram_word_idx_r0 = raddr0[26:2];
-    wire [24:0] ram_word_idx_r1 = raddr1[26:2];
-    wire [24:0] ram_word_idx_w = waddr[26:2];
     wire [8:0] sprite_word_idx_r = raddr1[10:2];
     wire [8:0] sprite_word_idx_w = waddr[10:2];
     wire [12:0] tile_word_idx_r = raddr1[14:2];
@@ -657,35 +884,43 @@ module mem(input clk, input clk_en,
         end
     endfunction
 
-    function [7:0]sd_read_byte;
+    // SD DMA readback helper for SD0/SD1 MMIO register windows.
+    function [7:0]sd_dma_read_byte;
         input [26:0]addr;
-        reg [8:0]offset;
+        reg [26:0]base;
+        reg [1:0]lane;
         begin
-            if (addr == SD_START_REG) begin
-                sd_read_byte = {7'b0, sd_busy};
-            end else if (SD_CMD_BASE <= addr && addr <= SD_CMD_END) begin
-                offset = {6'b0, addr[2:0]} - {6'b0, SD_CMD_BASE[2:0]};
-                sd_read_byte = sd_cmd_buffer[offset[2:0]];
-            end else if (SD_DATA_BASE <= addr && addr <= SD_DATA_END) begin
-                offset = addr[8:0] - SD_DATA_BASE[8:0];
-                sd_read_byte = sd_data_buffer[offset];
-            end else begin
-                sd_read_byte = 8'h00;
-            end
+            base = {addr[26:2], 2'b00};
+            lane = addr[1:0];
+            case (base)
+                SD0_DMA_MEM_ADDR_REG: sd_dma_read_byte = select_lane_byte(sd0_dma_mem_addr_reg, lane);
+                SD0_DMA_SD_BLOCK_REG: sd_dma_read_byte = select_lane_byte(sd0_dma_block_reg, lane);
+                SD0_DMA_LEN_REG: sd_dma_read_byte = select_lane_byte(sd0_dma_len_reg, lane);
+                SD0_DMA_CTRL_REG: sd_dma_read_byte = select_lane_byte(sd0_dma_ctrl, lane);
+                SD0_DMA_STATUS_REG: sd_dma_read_byte = select_lane_byte(sd0_dma_status, lane);
+                SD0_DMA_ERR_REG: sd_dma_read_byte = select_lane_byte(sd0_dma_error_code, lane);
+                SD1_DMA_MEM_ADDR_REG: sd_dma_read_byte = select_lane_byte(sd1_dma_mem_addr_reg, lane);
+                SD1_DMA_SD_BLOCK_REG: sd_dma_read_byte = select_lane_byte(sd1_dma_block_reg, lane);
+                SD1_DMA_LEN_REG: sd_dma_read_byte = select_lane_byte(sd1_dma_len_reg, lane);
+                SD1_DMA_CTRL_REG: sd_dma_read_byte = select_lane_byte(sd1_dma_ctrl, lane);
+                SD1_DMA_STATUS_REG: sd_dma_read_byte = select_lane_byte(sd1_dma_status, lane);
+                SD1_DMA_ERR_REG: sd_dma_read_byte = select_lane_byte(sd1_dma_error_code, lane);
+                default: sd_dma_read_byte = 8'h00;
+            endcase
         end
     endfunction
-    function [31:0]sd_read_word;
+    function [31:0]sd_dma_read_word;
         input [26:0]addr;
         reg [26:0]base;
         begin
             base = {addr[26:2], 2'b00};
-            sd_read_word = {sd_read_byte(base + 27'd3), sd_read_byte(base + 27'd2),
-                            sd_read_byte(base + 27'd1), sd_read_byte(base)};
+            sd_dma_read_word = {sd_dma_read_byte(base + 27'd3), sd_dma_read_byte(base + 27'd2),
+                                sd_dma_read_byte(base + 27'd1), sd_dma_read_byte(base)};
         end
     endfunction
     wire [31:0]data0_out = ram_data0_out;
-    wire sd_window_selected = ren_buf && (SD_CMD_BASE <= raddr1_buf) && (raddr1_buf <= SD_DATA_END);
-    wire [31:0]data1_out =  sd_window_selected ? sd_read_word(raddr1_buf) :
+    wire sd_window_selected = ren_buf && (SD0_DMA_MEM_ADDR_REG <= raddr1_buf) && (raddr1_buf <= SD_DMA_MMIO_END);
+    wire [31:0]data1_out =  sd_window_selected ? sd_dma_read_word(raddr1_buf) :
       (TILE_FRAMEBUFFER_START <= raddr1_buf && raddr1_buf < TILE_FRAMEBUFFER_END) ? framebuffer_data1_out :
       (PIXEL_FRAMEBUFFER_START <= raddr1_buf && raddr1_buf < PIXEL_FRAMEBUFFER_END) ? pixelbuffer_data1_out :
       (SPRITE_0_START <= raddr1_buf && raddr1_buf < SPRITE_1_START) ? sprite_0_data1_out :
@@ -765,31 +1000,372 @@ module mem(input clk, input clk_en,
         pit_we, wdata, pit_interrupt
     );
 
-    sd_spi_controller sd_ctrl(
+    // RAM path:
+    // - Physical addresses in [0, RAM_END) go through cache->ram model.
+    // - MMIO/display/sprite windows stay uncached and use direct logic below.
+    cache icache(
+        .clk(clk),
+        .addr(icache_req_addr),
+        .data(32'd0),
+        .re(icache_req_pending),
+        .we(4'd0),
+        .inv_valid(icache_inv_pulse),
+        .inv_addr(dma_inv_addr),
+        .data_out(icache_data_out),
+        .success(icache_success),
+        .ram_req(icache_ram_req),
+        .ram_we(icache_ram_we),
+        .ram_be(icache_ram_be),
+        .ram_addr(icache_ram_addr),
+        .ram_wdata(icache_ram_wdata),
+        .ram_rdata(icache_ram_rdata),
+        .ram_ready(icache_ram_ready),
+        .ram_busy(icache_ram_busy),
+        .ram_error_oob(icache_ram_error_oob)
+    );
+
+    cache dcache(
+        .clk(clk),
+        .addr(dcache_req_addr),
+        .data(dcache_req_wdata),
+        .re(dcache_req_pending && !dcache_req_is_write),
+        .we((dcache_req_pending && dcache_req_is_write) ? dcache_req_we : 4'd0),
+        .inv_valid(dcache_inv_pulse),
+        .inv_addr(dma_inv_addr),
+        .data_out(dcache_data_out),
+        .success(dcache_success),
+        .ram_req(dcache_ram_req),
+        .ram_we(dcache_ram_we),
+        .ram_be(dcache_ram_be),
+        .ram_addr(dcache_ram_addr),
+        .ram_wdata(dcache_ram_wdata),
+        .ram_rdata(dcache_ram_rdata),
+        .ram_ready(dcache_ram_ready),
+        .ram_busy(dcache_ram_busy),
+        .ram_error_oob(dcache_ram_error_oob)
+    );
+
+    // Backing RAM model:
+    // - Single-port SRAM-style interface (matches final board direction).
+    // - mem.v arbitration guarantees only one cache request is active, so a
+    //   simple active-port mux is sufficient.
+    // - SD->RAM DMA writes are direct-to-RAM requests to avoid I/D incoherence
+    //   when boot code jumps into freshly DMA-loaded kernel text.
+    assign shared_ram_req = icache_req_pending ? icache_ram_req :
+      dcache_req_pending ? dcache_ram_req :
+      dma_write_req_pending ? 1'b1 : 1'b0;
+    assign shared_ram_we = icache_req_pending ? icache_ram_we :
+      dcache_req_pending ? dcache_ram_we :
+      dma_write_req_pending ? 1'b1 : 1'b0;
+    assign shared_ram_be = icache_req_pending ? icache_ram_be :
+      dcache_req_pending ? dcache_ram_be :
+      dma_write_req_pending ? 4'hF : 4'd0;
+    assign shared_ram_addr = icache_req_pending ? icache_ram_addr :
+      dcache_req_pending ? dcache_ram_addr :
+      dma_write_req_pending ? dma_write_req_addr : 27'd0;
+    assign shared_ram_wdata = icache_req_pending ? icache_ram_wdata :
+      dcache_req_pending ? dcache_ram_wdata :
+      dma_write_req_pending ? dma_write_req_wdata : 32'd0;
+
+    assign icache_ram_rdata = shared_ram_rdata;
+    assign dcache_ram_rdata = shared_ram_rdata;
+    assign icache_ram_ready = icache_req_pending ? shared_ram_ready : 1'b0;
+    assign dcache_ram_ready = dcache_req_pending ? shared_ram_ready : 1'b0;
+    assign icache_ram_busy = icache_req_pending ? shared_ram_busy : 1'b0;
+    assign dcache_ram_busy = dcache_req_pending ? shared_ram_busy : 1'b0;
+    assign icache_ram_error_oob = icache_req_pending ? shared_ram_error_oob : 1'b0;
+    assign dcache_ram_error_oob = dcache_req_pending ? shared_ram_error_oob : 1'b0;
+
+    ram #(
+        .ADDR_WIDTH(27),
+        .WORD_ADDR_BITS(RAM_WORD_ADDR_BITS),
+        .ACCESS_LATENCY(RAM_ACCESS_LATENCY)
+    ) backing_ram(
+        .clk(clk),
+        .rst(1'b0),
+        .req(shared_ram_req),
+        .we(shared_ram_we),
+        .be(shared_ram_be),
+        .addr(shared_ram_addr),
+        .wdata(shared_ram_wdata),
+        .rdata(shared_ram_rdata),
+        .ready(shared_ram_ready),
+        .busy(shared_ram_busy),
+        .error_oob(shared_ram_error_oob)
+    );
+
+    // SD card 0 DMA engine control/state.
+    // Memory beats are acknowledged from the shared cache front-end path.
+    sd_dma_controller sd_dma0(
+        .clk(clk),
+        .mem_start_addr(sd0_dma_mem_addr_reg),
+        .sd_block_start_addr(sd0_dma_block_reg),
+        .num_blocks(sd0_dma_len_reg),
+        .ctrl_data(sd0_dma_ctrl_write_data),
+        .ctrl_write(sd0_dma_ctrl_write_pulse),
+        .status_clear(sd0_dma_status_clear_pulse),
+        .mem_ready_set(sd0_dma_mem_ready_pulse),
+        .sd_ready_set(sd0_dma_sd_ready_pulse),
+        .mem_data_in(sd0_dma_mem_data_in),
+        .sd_data_block_in(sd0_data_buffer_out),
+        .sd_data_block_in_valid(sd0_data_buffer_out_valid && (sd0_dma_ctrl[1] == 1'b0)),
+        .ctrl(sd0_dma_ctrl),
+        .status(sd0_dma_status),
+        .error_code(sd0_dma_error_code),
+        .mem_request_addr_out(sd0_dma_mem_request_addr),
+        .mem_request_data(sd0_dma_mem_request_data),
+        .mem_request_read(sd0_dma_mem_request_read),
+        .mem_request_write(sd0_dma_mem_request_write),
+        .sd_data_block_out(sd0_dma_sd_data_block_out),
+        .waiting_for_sd_ready_out(sd0_dma_waiting_for_sd_ready),
+        .init_waiting_for_sd_ready(sd0_dma_init_waiting_for_sd_ready),
+        .current_sd_block_addr(sd0_dma_current_sd_block_addr)
+    );
+
+    sd_spi_controller sd0_ctrl(
         .clk(clk),
         .clk_en(clk_en),
-        .start(sd_start_strobe),
-        .cmd_buffer_in(sd_cmd_buffer_in_flat),
-        .data_buffer_in(sd_data_buffer_in_flat),
-        .cmd_buffer_out(sd_cmd_buffer_out),
-        .cmd_buffer_out_valid(sd_cmd_buffer_out_valid),
-        .data_buffer_out(sd_data_buffer_out),
-        .data_buffer_out_valid(sd_data_buffer_out_valid),
-        .busy(sd_busy),
-        .interrupt(sd_interrupt),
-        .spi_cs(sd_spi_cs_int),
-        .spi_clk(sd_spi_clk_int),
-        .spi_mosi(sd_spi_mosi_int),
+        .start(sd0_spi_start_strobe),
+        .cmd_buffer_in(sd0_spi_cmd_buffer),
+        .data_buffer_in(sd0_spi_data_buffer),
+        .cmd_buffer_out(sd0_cmd_buffer_out),
+        .cmd_buffer_out_valid(sd0_cmd_buffer_out_valid),
+        .data_buffer_out(sd0_data_buffer_out),
+        .data_buffer_out_valid(sd0_data_buffer_out_valid),
+        .busy(sd0_busy),
+        .interrupt(sd0_interrupt),
+        .spi_cs(sd0_spi_cs_int),
+        .spi_clk(sd0_spi_clk_int),
+        .spi_mosi(sd0_spi_mosi_int),
         .spi_miso(sd_spi_miso)
     );
-    assign sd_spi_cs = sd_spi_cs_int;
-    assign sd_spi_clk = sd_spi_clk_int;
-    assign sd_spi_mosi = sd_spi_mosi_int;
+
+    // SD card 1 engine mirrors SD card 0 behavior on its own SPI bus.
+    sd_dma_controller sd_dma1(
+        .clk(clk),
+        .mem_start_addr(sd1_dma_mem_addr_reg),
+        .sd_block_start_addr(sd1_dma_block_reg),
+        .num_blocks(sd1_dma_len_reg),
+        .ctrl_data(sd1_dma_ctrl_write_data),
+        .ctrl_write(sd1_dma_ctrl_write_pulse),
+        .status_clear(sd1_dma_status_clear_pulse),
+        .mem_ready_set(sd1_dma_mem_ready_pulse),
+        .sd_ready_set(sd1_dma_sd_ready_pulse),
+        .mem_data_in(sd1_dma_mem_data_in),
+        .sd_data_block_in(sd1_data_buffer_out),
+        .sd_data_block_in_valid(sd1_data_buffer_out_valid && (sd1_dma_ctrl[1] == 1'b0)),
+        .ctrl(sd1_dma_ctrl),
+        .status(sd1_dma_status),
+        .error_code(sd1_dma_error_code),
+        .mem_request_addr_out(sd1_dma_mem_request_addr),
+        .mem_request_data(sd1_dma_mem_request_data),
+        .mem_request_read(sd1_dma_mem_request_read),
+        .mem_request_write(sd1_dma_mem_request_write),
+        .sd_data_block_out(sd1_dma_sd_data_block_out),
+        .waiting_for_sd_ready_out(sd1_dma_waiting_for_sd_ready),
+        .init_waiting_for_sd_ready(sd1_dma_init_waiting_for_sd_ready),
+        .current_sd_block_addr(sd1_dma_current_sd_block_addr)
+    );
+
+    sd_spi_controller sd1_ctrl(
+        .clk(clk),
+        .clk_en(clk_en),
+        .start(sd1_spi_start_strobe),
+        .cmd_buffer_in(sd1_spi_cmd_buffer),
+        .data_buffer_in(sd1_spi_data_buffer),
+        .cmd_buffer_out(sd1_cmd_buffer_out),
+        .cmd_buffer_out_valid(sd1_cmd_buffer_out_valid),
+        .data_buffer_out(sd1_data_buffer_out),
+        .data_buffer_out_valid(sd1_data_buffer_out_valid),
+        .busy(sd1_busy),
+        .interrupt(sd1_interrupt),
+        .spi_cs(sd1_spi_cs_int),
+        .spi_clk(sd1_spi_clk_int),
+        .spi_mosi(sd1_spi_mosi_int),
+        .spi_miso(sd1_spi_miso)
+    );
+    assign sd_spi_cs = sd0_spi_cs_int;
+    assign sd_spi_clk = sd0_spi_clk_int;
+    assign sd_spi_mosi = sd0_spi_mosi_int;
+    assign sd1_spi_cs = sd1_spi_cs_int;
+    assign sd1_spi_clk = sd1_spi_clk_int;
+    assign sd1_spi_mosi = sd1_spi_mosi_int;
     assign clock_divider = clock_div_reg;
-    // interrupt bits: [4]=VGA vblank, [3]=SD, [0]=PIT
-    assign interrupts = {11'd0, vga_vblank_irq, sd_irq_pending, 2'd0, pit_interrupt};
+    // interrupt bits: [6]=SD1, [4]=VGA vblank, [3]=SD0, [0]=PIT
+    assign interrupts = {9'd0, sd1_irq_pending, 1'b0, vga_vblank_irq, sd0_irq_pending, 2'd0, pit_interrupt};
 
     wire scroll_debug = ($test$plusargs("scroll_debug") != 0);
+
+    always @(posedge clk) begin
+      // Cache request tracking is intentionally outside clk_en gating so the
+      // cache->RAM miss path can complete while the CPU pipeline is paused.
+      // DMA mem_ready_set pulses are one-cycle acknowledgements consumed by
+      // sd_dma_controller and must be cleared every cycle by default.
+      sd0_dma_mem_ready_pulse <= 1'b0;
+      sd1_dma_mem_ready_pulse <= 1'b0;
+      icache_inv_pulse <= 1'b0;
+      dcache_inv_pulse <= 1'b0;
+
+      // Direct SD->RAM DMA write completion acks.
+      if (dma_write_req_pending && !icache_req_pending && !dcache_req_pending && shared_ram_ready) begin
+        dma_write_req_pending <= 1'b0;
+        if (dma_write_req_src == DCACHE_REQ_SRC_SD0) begin
+          sd0_dma_mem_ready_pulse <= 1'b1;
+        end else if (dma_write_req_src == DCACHE_REQ_SRC_SD1) begin
+          sd1_dma_mem_ready_pulse <= 1'b1;
+        end
+      end
+
+      if (icache_req_pending && icache_success) begin
+        icache_req_pending <= 1'b0;
+        ram_data0_out <= icache_data_out;
+        ram_data0_tag_out <= icache_req_tag;
+      end
+
+      if (dcache_req_pending && dcache_success) begin
+        dcache_req_pending <= 1'b0;
+        if (dcache_req_src == DCACHE_REQ_SRC_CPU) begin
+          if ($test$plusargs("sched_watch")) begin
+            if ((dcache_req_addr == SCHED_WATCH_N_ACTIVE ||
+                 dcache_req_addr == SCHED_WATCH_BOOTSTRAPPING ||
+                 dcache_req_addr == SCHED_WATCH_CURRENT_JIFFIES) ||
+                ((dcache_req_addr >= 27'h000FFEF8) && (dcache_req_addr <= 27'h000FFF0C))) begin
+              $display("[sched_watch] dcache_done addr=%h is_write=%b we=%b wdata=%h rdata=%h",
+                       dcache_req_addr, dcache_req_is_write, dcache_req_we,
+                       dcache_req_wdata, dcache_data_out);
+            end
+          end
+          if ($test$plusargs("barrier_watch") &&
+              (dcache_req_addr == BARRIER_WATCH_START_BARRIER)) begin
+            $display("[barrier_watch][mem] dcache_done addr=%h is_write=%b we=%b wdata=%h rdata=%h",
+                     dcache_req_addr, dcache_req_is_write, dcache_req_we,
+                     dcache_req_wdata, dcache_data_out);
+          end
+          if ($test$plusargs("queue_watch") &&
+              ((dcache_req_addr >= QUEUE_WATCH_SLEEPQ_START && dcache_req_addr <= QUEUE_WATCH_SLEEPQ_END) ||
+               (dcache_req_addr >= QUEUE_WATCH_READYQ_START && dcache_req_addr <= QUEUE_WATCH_READYQ_END) ||
+               (dcache_req_addr >= QUEUE_WATCH_REAPERQ_START && dcache_req_addr <= QUEUE_WATCH_REAPERQ_END))) begin
+            $display("[queue_watch][mem] dcache_done addr=%h is_write=%b we=%b wdata=%h rdata=%h",
+                     dcache_req_addr, dcache_req_is_write, dcache_req_we,
+                     dcache_req_wdata, dcache_data_out);
+          end
+          if (dcache_req_is_write && $test$plusargs("heap_watch") &&
+              (dcache_req_addr == 27'h200000 || dcache_req_addr == 27'h200004 ||
+               dcache_req_addr == 27'h200008 || dcache_req_addr == 27'h20000C ||
+               dcache_req_addr == 27'h200010 || dcache_req_addr == 27'h200014)) begin
+            $display("[heap_watch] dcache_done write addr=%h we=%b wdata=%h",
+                     dcache_req_addr, dcache_req_we, dcache_req_wdata);
+          end
+          if (!dcache_req_is_write) begin
+            ram_data1_out <= dcache_data_out;
+          end
+        end else if (dcache_req_src == DCACHE_REQ_SRC_SD0) begin
+          if (!dcache_req_is_write) begin
+            sd0_dma_mem_data_in <= dcache_data_out;
+          end
+          sd0_dma_mem_ready_pulse <= 1'b1;
+        end else if (dcache_req_src == DCACHE_REQ_SRC_SD1) begin
+          if (!dcache_req_is_write) begin
+            sd1_dma_mem_data_in <= dcache_data_out;
+          end
+          sd1_dma_mem_ready_pulse <= 1'b1;
+        end
+      end
+
+      // Issue one new cache-backed request at a time.
+      // Arbitration policy: CPU D-cache > CPU I-cache > SD0 DMA > SD1 DMA.
+      if (!icache_req_pending && !dcache_req_pending && !dma_write_req_pending && pipe_clk_en) begin
+        if (cpu_dcache_issue_now) begin
+          if ($test$plusargs("sched_watch")) begin
+            if ((dcache_ram_write_access &&
+                 ((waddr == SCHED_WATCH_N_ACTIVE) ||
+                  (waddr == SCHED_WATCH_BOOTSTRAPPING) ||
+                  (waddr == SCHED_WATCH_CURRENT_JIFFIES) ||
+                  ((waddr >= 27'h000FFEF8) && (waddr <= 27'h000FFF0C)))) ||
+                (dcache_ram_read_access &&
+                 ((raddr1 == SCHED_WATCH_N_ACTIVE) ||
+                  (raddr1 == SCHED_WATCH_BOOTSTRAPPING) ||
+                  (raddr1 == SCHED_WATCH_CURRENT_JIFFIES) ||
+                  ((raddr1 >= 27'h000FFEF8) && (raddr1 <= 27'h000FFF0C))))) begin
+              $display("[sched_watch] cpu_issue addr=%h is_write=%b we=%b wdata=%h",
+                       dcache_ram_write_access ? waddr : raddr1,
+                       dcache_ram_write_access, wen, wdata);
+            end
+          end
+          if ($test$plusargs("barrier_watch") &&
+              ((dcache_ram_write_access && (waddr == BARRIER_WATCH_START_BARRIER)) ||
+               (dcache_ram_read_access && (raddr1 == BARRIER_WATCH_START_BARRIER)))) begin
+            $display("[barrier_watch][mem] cpu_issue addr=%h is_write=%b we=%b wdata=%h",
+                     dcache_ram_write_access ? waddr : raddr1,
+                     dcache_ram_write_access, wen, wdata);
+          end
+          if ($test$plusargs("queue_watch") &&
+              ((dcache_ram_write_access &&
+                ((waddr >= QUEUE_WATCH_SLEEPQ_START && waddr <= QUEUE_WATCH_SLEEPQ_END) ||
+                 (waddr >= QUEUE_WATCH_READYQ_START && waddr <= QUEUE_WATCH_READYQ_END) ||
+                 (waddr >= QUEUE_WATCH_REAPERQ_START && waddr <= QUEUE_WATCH_REAPERQ_END))) ||
+               (dcache_ram_read_access &&
+                ((raddr1 >= QUEUE_WATCH_SLEEPQ_START && raddr1 <= QUEUE_WATCH_SLEEPQ_END) ||
+                 (raddr1 >= QUEUE_WATCH_READYQ_START && raddr1 <= QUEUE_WATCH_READYQ_END) ||
+                 (raddr1 >= QUEUE_WATCH_REAPERQ_START && raddr1 <= QUEUE_WATCH_REAPERQ_END))))) begin
+            $display("[queue_watch][mem] cpu_issue addr=%h is_write=%b we=%b wdata=%h",
+                     dcache_ram_write_access ? waddr : raddr1,
+                     dcache_ram_write_access, wen, wdata);
+          end
+          if (dcache_ram_write_access && $test$plusargs("heap_watch") &&
+              (waddr == 27'h200000 || waddr == 27'h200004 ||
+               waddr == 27'h200008 || waddr == 27'h20000C ||
+               waddr == 27'h200010 || waddr == 27'h200014)) begin
+            $display("[heap_watch] cpu_issue write addr=%h we=%b wdata=%h",
+                     waddr, wen, wdata);
+          end
+          dcache_req_pending <= 1'b1;
+          dcache_req_is_write <= dcache_ram_write_access;
+          dcache_req_we <= dcache_ram_write_access ? wen : 4'd0;
+          dcache_req_addr <= dcache_ram_write_access ? waddr : raddr1;
+          dcache_req_wdata <= wdata;
+          dcache_req_src <= DCACHE_REQ_SRC_CPU;
+        end else if (icache_ram_access && icache_req_valid) begin
+          icache_req_pending <= 1'b1;
+          icache_req_addr <= raddr0;
+          icache_req_tag <= rtag0;
+        end else if (sd0_dma_mem_req_active) begin
+          if (sd0_dma_mem_request_write) begin
+            dma_write_req_pending <= 1'b1;
+            dma_write_req_src <= DCACHE_REQ_SRC_SD0;
+            dma_write_req_addr <= sd0_dma_mem_request_addr[26:0];
+            dma_write_req_wdata <= sd0_dma_mem_request_data;
+            dma_inv_addr <= sd0_dma_mem_request_addr[26:0];
+            icache_inv_pulse <= 1'b1;
+            dcache_inv_pulse <= 1'b1;
+          end else begin
+            dcache_req_pending <= 1'b1;
+            dcache_req_is_write <= 1'b0;
+            dcache_req_we <= 4'd0;
+            dcache_req_addr <= sd0_dma_mem_request_addr[26:0];
+            dcache_req_wdata <= 32'd0;
+            dcache_req_src <= DCACHE_REQ_SRC_SD0;
+          end
+        end else if (sd1_dma_mem_req_active) begin
+          if (sd1_dma_mem_request_write) begin
+            dma_write_req_pending <= 1'b1;
+            dma_write_req_src <= DCACHE_REQ_SRC_SD1;
+            dma_write_req_addr <= sd1_dma_mem_request_addr[26:0];
+            dma_write_req_wdata <= sd1_dma_mem_request_data;
+            dma_inv_addr <= sd1_dma_mem_request_addr[26:0];
+            icache_inv_pulse <= 1'b1;
+            dcache_inv_pulse <= 1'b1;
+          end else begin
+            dcache_req_pending <= 1'b1;
+            dcache_req_is_write <= 1'b0;
+            dcache_req_we <= 4'd0;
+            dcache_req_addr <= sd1_dma_mem_request_addr[26:0];
+            dcache_req_wdata <= 32'd0;
+            dcache_req_src <= DCACHE_REQ_SRC_SD1;
+          end
+        end
+      end
+    end
 
     always @(posedge clk) begin
       // VGA composition pipeline:
@@ -876,8 +1452,6 @@ module mem(input clk, input clk_en,
         wen_buf <= wen;
         ren_buf <= ren;
 
-        ram_data0_out <= (raddr0 < RAM_END) ? ram[ram_word_idx_r0] : 32'd0;
-        ram_data1_out <= (raddr1 < RAM_END) ? ram[ram_word_idx_r1] : 32'd0;
         sprite_0_data1_out <= sprite_0_data[sprite_word_idx_r];
         sprite_1_data1_out <= sprite_1_data[sprite_word_idx_r];
         sprite_2_data1_out <= sprite_2_data[sprite_word_idx_r];
@@ -898,39 +1472,309 @@ module mem(input clk, input clk_en,
         framebuffer_data1_out <= frame_buffer[tile_frame_word_idx_r];
         pixelbuffer_data1_out <= pixel_buffer[pixel_frame_word_idx_r];
 
-        sd_start_strobe <= 1'b0;
-        if (sd_cmd_buffer_out_valid) begin
-            for (sd_copy_idx = 0; sd_copy_idx < 6; sd_copy_idx = sd_copy_idx + 1) begin
-                sd_cmd_buffer[sd_copy_idx] = sd_cmd_buffer_out_bytes[sd_copy_idx];
+        sd0_spi_start_strobe <= 1'b0;
+        sd0_dma_ctrl_write_pulse <= 1'b0;
+        sd0_dma_status_clear_pulse <= 1'b0;
+        sd0_dma_ctrl_write_data <= sd0_dma_ctrl;
+        sd0_dma_sd_ready_pulse <= 1'b0;
+
+        sd1_spi_start_strobe <= 1'b0;
+        sd1_dma_ctrl_write_pulse <= 1'b0;
+        sd1_dma_status_clear_pulse <= 1'b0;
+        sd1_dma_ctrl_write_data <= sd1_dma_ctrl;
+        sd1_dma_sd_ready_pulse <= 1'b0;
+
+        // SD0 orchestration:
+        // - During SD_INIT, issue CMD0/CMD8/CMD55/ACMD41/CMD58 and finish on CMD58 response.
+        // - During DMA block wait, issue exactly one CMD17/CMD24 and finish on SPI interrupt.
+        if (!sd0_dma_waiting_for_sd_ready) begin
+            sd0_spi_launch_sent <= 1'b0;
+            sd0_init_state <= SD_INIT_STATE_IDLE;
+            sd0_init_acmd41_attempts <= 8'd0;
+        end else if (sd0_dma_init_waiting_for_sd_ready) begin
+            case (sd0_init_state)
+                SD_INIT_STATE_IDLE: begin
+                    if (sd0_dma_status[0] && !sd0_spi_launch_sent && !sd0_busy) begin
+                        sd0_card_high_capacity <= 1'b0;
+                        sd0_spi_cmd_buffer[7:0] <= SD_SPI_CMD0;
+                        sd0_spi_cmd_buffer[15:8] <= 8'h00;
+                        sd0_spi_cmd_buffer[23:16] <= 8'h00;
+                        sd0_spi_cmd_buffer[31:24] <= 8'h00;
+                        sd0_spi_cmd_buffer[39:32] <= 8'h00;
+                        sd0_spi_cmd_buffer[47:40] <= 8'h95;
+                        sd0_spi_start_strobe <= 1'b1;
+                        sd0_spi_launch_sent <= 1'b1;
+                        sd0_init_state <= SD_INIT_STATE_WAIT_CMD0;
+                    end
+                end
+                SD_INIT_STATE_WAIT_CMD0: begin
+                    if (sd0_cmd_buffer_out_valid) begin
+                        sd0_spi_launch_sent <= 1'b0;
+                        sd0_init_state <= SD_INIT_STATE_WAIT_CMD8;
+                    end
+                end
+                SD_INIT_STATE_WAIT_CMD8: begin
+                    if (sd0_dma_status[0] && !sd0_spi_launch_sent && !sd0_busy) begin
+                        sd0_spi_cmd_buffer[7:0] <= 8'h48;
+                        sd0_spi_cmd_buffer[15:8] <= 8'h00;
+                        sd0_spi_cmd_buffer[23:16] <= 8'h00;
+                        sd0_spi_cmd_buffer[31:24] <= 8'h01;
+                        sd0_spi_cmd_buffer[39:32] <= 8'hAA;
+                        sd0_spi_cmd_buffer[47:40] <= 8'h87;
+                        sd0_spi_start_strobe <= 1'b1;
+                        sd0_spi_launch_sent <= 1'b1;
+                    end
+                    if (sd0_cmd_buffer_out_valid) begin
+                        sd0_spi_launch_sent <= 1'b0;
+                        sd0_init_acmd41_attempts <= 8'd0;
+                        sd0_init_state <= SD_INIT_STATE_WAIT_CMD55;
+                    end
+                end
+                SD_INIT_STATE_WAIT_CMD55: begin
+                    if (sd0_dma_status[0] && !sd0_spi_launch_sent && !sd0_busy) begin
+                        sd0_spi_cmd_buffer[7:0] <= SD_SPI_CMD55;
+                        sd0_spi_cmd_buffer[15:8] <= 8'h00;
+                        sd0_spi_cmd_buffer[23:16] <= 8'h00;
+                        sd0_spi_cmd_buffer[31:24] <= 8'h00;
+                        sd0_spi_cmd_buffer[39:32] <= 8'h00;
+                        sd0_spi_cmd_buffer[47:40] <= 8'h65;
+                        sd0_spi_start_strobe <= 1'b1;
+                        sd0_spi_launch_sent <= 1'b1;
+                    end
+                    if (sd0_cmd_buffer_out_valid) begin
+                        sd0_spi_launch_sent <= 1'b0;
+                        if (sd0_cmd_buffer_out[7:0] == SD_SPI_R1_ILLEGAL) begin
+                            sd0_init_state <= SD_INIT_STATE_WAIT_CMD58;
+                        end else begin
+                            sd0_init_state <= SD_INIT_STATE_WAIT_ACMD41;
+                        end
+                    end
+                end
+                SD_INIT_STATE_WAIT_ACMD41: begin
+                    if (sd0_dma_status[0] && !sd0_spi_launch_sent && !sd0_busy) begin
+                        sd0_spi_cmd_buffer[7:0] <= SD_SPI_ACMD41;
+                        sd0_spi_cmd_buffer[15:8] <= 8'h40;
+                        sd0_spi_cmd_buffer[23:16] <= 8'h00;
+                        sd0_spi_cmd_buffer[31:24] <= 8'h00;
+                        sd0_spi_cmd_buffer[39:32] <= 8'h00;
+                        sd0_spi_cmd_buffer[47:40] <= 8'h77;
+                        sd0_spi_start_strobe <= 1'b1;
+                        sd0_spi_launch_sent <= 1'b1;
+                    end
+                    if (sd0_cmd_buffer_out_valid) begin
+                        sd0_spi_launch_sent <= 1'b0;
+                        if (sd0_cmd_buffer_out[7:0] == SD_SPI_R1_READY ||
+                            sd0_init_acmd41_attempts == (SD_SPI_INIT_MAX_ACMD41_ATTEMPTS - 1'b1)) begin
+                            sd0_init_state <= SD_INIT_STATE_WAIT_CMD58;
+                        end else begin
+                            sd0_init_acmd41_attempts <= sd0_init_acmd41_attempts + 1'b1;
+                            sd0_init_state <= SD_INIT_STATE_WAIT_CMD55;
+                        end
+                    end
+                end
+                SD_INIT_STATE_WAIT_CMD58: begin
+                    if (sd0_dma_status[0] && !sd0_spi_launch_sent && !sd0_busy) begin
+                        sd0_spi_cmd_buffer[7:0] <= SD_SPI_CMD58;
+                        sd0_spi_cmd_buffer[15:8] <= 8'h00;
+                        sd0_spi_cmd_buffer[23:16] <= 8'h00;
+                        sd0_spi_cmd_buffer[31:24] <= 8'h00;
+                        sd0_spi_cmd_buffer[39:32] <= 8'h00;
+                        sd0_spi_cmd_buffer[47:40] <= 8'hFD;
+                        sd0_spi_start_strobe <= 1'b1;
+                        sd0_spi_launch_sent <= 1'b1;
+                    end
+                    if (sd0_cmd_buffer_out_valid) begin
+                        // CMD58 OCR[30] indicates SDHC block addressing mode.
+                        sd0_card_high_capacity <= sd0_cmd_buffer_out[14];
+                        // Hold launch until DMA drops waiting_for_sd_ready so we
+                        // do not emit a stale extra CMD0 one cycle after init completes.
+                        sd0_spi_launch_sent <= 1'b1;
+                        sd0_init_state <= SD_INIT_STATE_IDLE;
+                        sd0_dma_sd_ready_pulse <= 1'b1;
+                    end
+                end
+                default: begin
+                    sd0_init_state <= SD_INIT_STATE_IDLE;
+                    sd0_spi_launch_sent <= 1'b0;
+                end
+            endcase
+        end else begin
+            if (sd0_dma_status[0] && !sd0_spi_launch_sent && !sd0_busy) begin
+                sd0_spi_cmd_buffer[7:0] <= sd0_dma_ctrl[1] ? SD_SPI_CMD24 : SD_SPI_CMD17;
+                sd0_spi_cmd_buffer[15:8] <= sd0_spi_cmd_arg[31:24];
+                sd0_spi_cmd_buffer[23:16] <= sd0_spi_cmd_arg[23:16];
+                sd0_spi_cmd_buffer[31:24] <= sd0_spi_cmd_arg[15:8];
+                sd0_spi_cmd_buffer[39:32] <= sd0_spi_cmd_arg[7:0];
+                sd0_spi_cmd_buffer[47:40] <= 8'h01;
+                if (sd0_dma_ctrl[1]) begin
+                    // CMD24 consumes the RAM->SD block currently staged in DMA.
+                    sd0_spi_data_buffer <= sd0_dma_sd_data_block_out;
+                end
+                sd0_spi_start_strobe <= 1'b1;
+                sd0_spi_launch_sent <= 1'b1;
+            end
+            if (sd0_interrupt) begin
+                sd0_dma_sd_ready_pulse <= 1'b1;
             end
         end
-        if (sd_data_buffer_out_valid) begin
-            for (sd_copy_idx = 0; sd_copy_idx < 512; sd_copy_idx = sd_copy_idx + 1) begin
-                sd_data_buffer[sd_copy_idx] = sd_data_buffer_out_bytes[sd_copy_idx];
+
+        if (!sd0_dma_done_prev && sd0_dma_status[1] && sd0_dma_ctrl[2]) begin
+            sd0_irq_pending <= 1'b1;
+        end
+        sd0_dma_done_prev <= sd0_dma_status[1];
+
+        // SD1 orchestration mirrors SD0.
+        if (!sd1_dma_waiting_for_sd_ready) begin
+            sd1_spi_launch_sent <= 1'b0;
+            sd1_init_state <= SD_INIT_STATE_IDLE;
+            sd1_init_acmd41_attempts <= 8'd0;
+        end else if (sd1_dma_init_waiting_for_sd_ready) begin
+            case (sd1_init_state)
+                SD_INIT_STATE_IDLE: begin
+                    if (sd1_dma_status[0] && !sd1_spi_launch_sent && !sd1_busy) begin
+                        sd1_card_high_capacity <= 1'b0;
+                        sd1_spi_cmd_buffer[7:0] <= SD_SPI_CMD0;
+                        sd1_spi_cmd_buffer[15:8] <= 8'h00;
+                        sd1_spi_cmd_buffer[23:16] <= 8'h00;
+                        sd1_spi_cmd_buffer[31:24] <= 8'h00;
+                        sd1_spi_cmd_buffer[39:32] <= 8'h00;
+                        sd1_spi_cmd_buffer[47:40] <= 8'h95;
+                        sd1_spi_start_strobe <= 1'b1;
+                        sd1_spi_launch_sent <= 1'b1;
+                        sd1_init_state <= SD_INIT_STATE_WAIT_CMD0;
+                    end
+                end
+                SD_INIT_STATE_WAIT_CMD0: begin
+                    if (sd1_cmd_buffer_out_valid) begin
+                        sd1_spi_launch_sent <= 1'b0;
+                        sd1_init_state <= SD_INIT_STATE_WAIT_CMD8;
+                    end
+                end
+                SD_INIT_STATE_WAIT_CMD8: begin
+                    if (sd1_dma_status[0] && !sd1_spi_launch_sent && !sd1_busy) begin
+                        sd1_spi_cmd_buffer[7:0] <= 8'h48;
+                        sd1_spi_cmd_buffer[15:8] <= 8'h00;
+                        sd1_spi_cmd_buffer[23:16] <= 8'h00;
+                        sd1_spi_cmd_buffer[31:24] <= 8'h01;
+                        sd1_spi_cmd_buffer[39:32] <= 8'hAA;
+                        sd1_spi_cmd_buffer[47:40] <= 8'h87;
+                        sd1_spi_start_strobe <= 1'b1;
+                        sd1_spi_launch_sent <= 1'b1;
+                    end
+                    if (sd1_cmd_buffer_out_valid) begin
+                        sd1_spi_launch_sent <= 1'b0;
+                        sd1_init_acmd41_attempts <= 8'd0;
+                        sd1_init_state <= SD_INIT_STATE_WAIT_CMD55;
+                    end
+                end
+                SD_INIT_STATE_WAIT_CMD55: begin
+                    if (sd1_dma_status[0] && !sd1_spi_launch_sent && !sd1_busy) begin
+                        sd1_spi_cmd_buffer[7:0] <= SD_SPI_CMD55;
+                        sd1_spi_cmd_buffer[15:8] <= 8'h00;
+                        sd1_spi_cmd_buffer[23:16] <= 8'h00;
+                        sd1_spi_cmd_buffer[31:24] <= 8'h00;
+                        sd1_spi_cmd_buffer[39:32] <= 8'h00;
+                        sd1_spi_cmd_buffer[47:40] <= 8'h65;
+                        sd1_spi_start_strobe <= 1'b1;
+                        sd1_spi_launch_sent <= 1'b1;
+                    end
+                    if (sd1_cmd_buffer_out_valid) begin
+                        sd1_spi_launch_sent <= 1'b0;
+                        if (sd1_cmd_buffer_out[7:0] == SD_SPI_R1_ILLEGAL) begin
+                            sd1_init_state <= SD_INIT_STATE_WAIT_CMD58;
+                        end else begin
+                            sd1_init_state <= SD_INIT_STATE_WAIT_ACMD41;
+                        end
+                    end
+                end
+                SD_INIT_STATE_WAIT_ACMD41: begin
+                    if (sd1_dma_status[0] && !sd1_spi_launch_sent && !sd1_busy) begin
+                        sd1_spi_cmd_buffer[7:0] <= SD_SPI_ACMD41;
+                        sd1_spi_cmd_buffer[15:8] <= 8'h40;
+                        sd1_spi_cmd_buffer[23:16] <= 8'h00;
+                        sd1_spi_cmd_buffer[31:24] <= 8'h00;
+                        sd1_spi_cmd_buffer[39:32] <= 8'h00;
+                        sd1_spi_cmd_buffer[47:40] <= 8'h77;
+                        sd1_spi_start_strobe <= 1'b1;
+                        sd1_spi_launch_sent <= 1'b1;
+                    end
+                    if (sd1_cmd_buffer_out_valid) begin
+                        sd1_spi_launch_sent <= 1'b0;
+                        if (sd1_cmd_buffer_out[7:0] == SD_SPI_R1_READY ||
+                            sd1_init_acmd41_attempts == (SD_SPI_INIT_MAX_ACMD41_ATTEMPTS - 1'b1)) begin
+                            sd1_init_state <= SD_INIT_STATE_WAIT_CMD58;
+                        end else begin
+                            sd1_init_acmd41_attempts <= sd1_init_acmd41_attempts + 1'b1;
+                            sd1_init_state <= SD_INIT_STATE_WAIT_CMD55;
+                        end
+                    end
+                end
+                SD_INIT_STATE_WAIT_CMD58: begin
+                    if (sd1_dma_status[0] && !sd1_spi_launch_sent && !sd1_busy) begin
+                        sd1_spi_cmd_buffer[7:0] <= SD_SPI_CMD58;
+                        sd1_spi_cmd_buffer[15:8] <= 8'h00;
+                        sd1_spi_cmd_buffer[23:16] <= 8'h00;
+                        sd1_spi_cmd_buffer[31:24] <= 8'h00;
+                        sd1_spi_cmd_buffer[39:32] <= 8'h00;
+                        sd1_spi_cmd_buffer[47:40] <= 8'hFD;
+                        sd1_spi_start_strobe <= 1'b1;
+                        sd1_spi_launch_sent <= 1'b1;
+                    end
+                    if (sd1_cmd_buffer_out_valid) begin
+                        // CMD58 OCR[30] indicates SDHC block addressing mode.
+                        sd1_card_high_capacity <= sd1_cmd_buffer_out[14];
+                        // Hold launch until DMA drops waiting_for_sd_ready so we
+                        // do not emit a stale extra CMD0 one cycle after init completes.
+                        sd1_spi_launch_sent <= 1'b1;
+                        sd1_init_state <= SD_INIT_STATE_IDLE;
+                        sd1_dma_sd_ready_pulse <= 1'b1;
+                    end
+                end
+                default: begin
+                    sd1_init_state <= SD_INIT_STATE_IDLE;
+                    sd1_spi_launch_sent <= 1'b0;
+                end
+            endcase
+        end else begin
+            if (sd1_dma_status[0] && !sd1_spi_launch_sent && !sd1_busy) begin
+                sd1_spi_cmd_buffer[7:0] <= sd1_dma_ctrl[1] ? SD_SPI_CMD24 : SD_SPI_CMD17;
+                sd1_spi_cmd_buffer[15:8] <= sd1_spi_cmd_arg[31:24];
+                sd1_spi_cmd_buffer[23:16] <= sd1_spi_cmd_arg[23:16];
+                sd1_spi_cmd_buffer[31:24] <= sd1_spi_cmd_arg[15:8];
+                sd1_spi_cmd_buffer[39:32] <= sd1_spi_cmd_arg[7:0];
+                sd1_spi_cmd_buffer[47:40] <= 8'h01;
+                if (sd1_dma_ctrl[1]) begin
+                    // CMD24 consumes the RAM->SD block currently staged in DMA.
+                    sd1_spi_data_buffer <= sd1_dma_sd_data_block_out;
+                end
+                sd1_spi_start_strobe <= 1'b1;
+                sd1_spi_launch_sent <= 1'b1;
+            end
+            if (sd1_interrupt) begin
+                sd1_dma_sd_ready_pulse <= 1'b1;
             end
         end
-        if (sd_interrupt) begin
-            sd_irq_pending <= 1'b1;
+
+        if (!sd1_dma_done_prev && sd1_dma_status[1] && sd1_dma_ctrl[2]) begin
+            sd1_irq_pending <= 1'b1;
         end
-        if (sd_start_pending && !sd_busy) begin
-            sd_start_strobe <= 1'b1;
-            sd_start_pending <= 1'b0;
-            sd_irq_pending <= 1'b0;
-        end
+        sd1_dma_done_prev <= sd1_dma_status[1];
 
         rdata0 <= data0_out;
+        rdata0_tag <= ram_data0_tag_out;
         rdata1 <= data1_out;
 
+        // CPU-originated MMIO writes/read-consume side effects execute only
+        // when the CPU pipeline advances this cycle.
+        if (pipe_clk_en) begin
         if (pit_we) begin
             pit_cfg_reg <= wdata;
+            if ($test$plusargs("sched_watch")) begin
+              $display("[sched_watch] pit_we data=%h", wdata);
+            end
         end
 
-        if (waddr < RAM_END) begin
-            if (wen[0]) ram[ram_word_idx_w][7:0]   <= wdata[7:0];
-            if (wen[1]) ram[ram_word_idx_w][15:8]  <= wdata[15:8];
-            if (wen[2]) ram[ram_word_idx_w][23:16] <= wdata[23:16];
-            if (wen[3]) ram[ram_word_idx_w][31:24] <= wdata[31:24];
-        end else if (SPRITE_0_START <= waddr && waddr < SPRITE_1_START) begin
+        if (SPRITE_0_START <= waddr && waddr < SPRITE_1_START) begin
             if (wen[0]) sprite_0_data[sprite_word_idx_w][7:0]   <= wdata[7:0];
             if (wen[1]) sprite_0_data[sprite_word_idx_w][15:8]  <= wdata[15:8];
             if (wen[2]) sprite_0_data[sprite_word_idx_w][23:16] <= wdata[23:16];
@@ -1062,15 +1906,36 @@ module mem(input clk, input clk_en,
                     clock_div_reg[(scroll_byte_addr - CLOCK_DIV_REG) * 8 +: 8] <= scroll_byte_data;
                 else if (SPRITE_SCALE_BASE <= scroll_byte_addr && scroll_byte_addr < SPRITE_SCALE_END)
                     sprite_scale_regs[scroll_byte_addr[3:0]] <= scroll_byte_data;
-                if (scroll_byte_addr == SD_START_REG) begin
-                    sd_start_pending <= 1'b1;
-                    sd_irq_pending <= 1'b0;
-                end else if (SD_CMD_BASE <= scroll_byte_addr && scroll_byte_addr <= SD_CMD_END) begin
-                    sd_byte_offset = {6'b0, scroll_byte_addr[2:0]} - {6'b0, SD_CMD_BASE[2:0]};
-                    sd_cmd_buffer[sd_byte_offset[2:0]] <= scroll_byte_data;
-                end else if (SD_DATA_BASE <= scroll_byte_addr && scroll_byte_addr <= SD_DATA_END) begin
-                    sd_byte_offset = scroll_byte_addr[8:0] - SD_DATA_BASE[8:0];
-                    sd_data_buffer[sd_byte_offset] <= scroll_byte_data;
+                if (SD0_DMA_MEM_ADDR_REG <= scroll_byte_addr && scroll_byte_addr < (SD0_DMA_MEM_ADDR_REG + 27'd4)) begin
+                    sd0_dma_mem_addr_reg[(scroll_byte_addr - SD0_DMA_MEM_ADDR_REG) * 8 +: 8] <= scroll_byte_data;
+                end else if (SD0_DMA_SD_BLOCK_REG <= scroll_byte_addr && scroll_byte_addr < (SD0_DMA_SD_BLOCK_REG + 27'd4)) begin
+                    sd0_dma_block_reg[(scroll_byte_addr - SD0_DMA_SD_BLOCK_REG) * 8 +: 8] <= scroll_byte_data;
+                end else if (SD0_DMA_LEN_REG <= scroll_byte_addr && scroll_byte_addr < (SD0_DMA_LEN_REG + 27'd4)) begin
+                    sd0_dma_len_reg[(scroll_byte_addr - SD0_DMA_LEN_REG) * 8 +: 8] <= scroll_byte_data;
+                end else if (SD0_DMA_CTRL_REG <= scroll_byte_addr && scroll_byte_addr < (SD0_DMA_CTRL_REG + 27'd4)) begin
+                    sd0_dma_ctrl_write_pulse <= 1'b1;
+                    sd0_dma_ctrl_write_data[(scroll_byte_addr - SD0_DMA_CTRL_REG) * 8 +: 8] <= scroll_byte_data;
+                    if ((scroll_byte_addr == SD0_DMA_CTRL_REG) && (scroll_byte_data[0] || scroll_byte_data[3])) begin
+                        sd0_irq_pending <= 1'b0;
+                    end
+                end else if (SD0_DMA_STATUS_REG <= scroll_byte_addr && scroll_byte_addr < (SD0_DMA_STATUS_REG + 27'd4)) begin
+                    sd0_dma_status_clear_pulse <= 1'b1;
+                    sd0_irq_pending <= 1'b0;
+                end else if (SD1_DMA_MEM_ADDR_REG <= scroll_byte_addr && scroll_byte_addr < (SD1_DMA_MEM_ADDR_REG + 27'd4)) begin
+                    sd1_dma_mem_addr_reg[(scroll_byte_addr - SD1_DMA_MEM_ADDR_REG) * 8 +: 8] <= scroll_byte_data;
+                end else if (SD1_DMA_SD_BLOCK_REG <= scroll_byte_addr && scroll_byte_addr < (SD1_DMA_SD_BLOCK_REG + 27'd4)) begin
+                    sd1_dma_block_reg[(scroll_byte_addr - SD1_DMA_SD_BLOCK_REG) * 8 +: 8] <= scroll_byte_data;
+                end else if (SD1_DMA_LEN_REG <= scroll_byte_addr && scroll_byte_addr < (SD1_DMA_LEN_REG + 27'd4)) begin
+                    sd1_dma_len_reg[(scroll_byte_addr - SD1_DMA_LEN_REG) * 8 +: 8] <= scroll_byte_data;
+                end else if (SD1_DMA_CTRL_REG <= scroll_byte_addr && scroll_byte_addr < (SD1_DMA_CTRL_REG + 27'd4)) begin
+                    sd1_dma_ctrl_write_pulse <= 1'b1;
+                    sd1_dma_ctrl_write_data[(scroll_byte_addr - SD1_DMA_CTRL_REG) * 8 +: 8] <= scroll_byte_data;
+                    if ((scroll_byte_addr == SD1_DMA_CTRL_REG) && (scroll_byte_data[0] || scroll_byte_data[3])) begin
+                        sd1_irq_pending <= 1'b0;
+                    end
+                end else if (SD1_DMA_STATUS_REG <= scroll_byte_addr && scroll_byte_addr < (SD1_DMA_STATUS_REG + 27'd4)) begin
+                    sd1_dma_status_clear_pulse <= 1'b1;
+                    sd1_irq_pending <= 1'b0;
                 end
             end
         end
@@ -1269,7 +2134,16 @@ module mem(input clk, input clk_en,
             else if (wen[3:2] == 2'b11)
                 sprite_15_y <= sprite_coord_high;
         end
+        end
+        // PIT runs on base clock; track pulse cadence to diagnose
+        // interrupt-induced starvation when scheduler debugging is enabled.
+        if (pit_interrupt) begin
+          pit_irq_count <= pit_irq_count + 32'd1;
+          if ($test$plusargs("sched_watch") &&
+              ((pit_irq_count < 32'd16) || (pit_irq_count[11:0] == 12'd0))) begin
+            $display("[sched_watch] pit_irq count=%0d", pit_irq_count + 32'd1);
+          end
+        end
       end
     end
-
 endmodule

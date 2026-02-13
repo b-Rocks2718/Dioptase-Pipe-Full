@@ -25,7 +25,10 @@ module ps2(input ps2_clk, input ps2_data, input clk, input ren, output [15:0]dat
     reg extended_pending = 0;
     assign data = keyboard_reg;
     wire [7:0]ascii = scan_decode[scan_code[7:0]];
-    wire ascii_valid = (ascii != 8'h00);
+    // scan_decode.hex uses 0x07 as an "unmapped/non-printable" sentinel.
+    // Treat both 0x00 and 0x07 as invalid so random/unmapped scan codes do
+    // not surface as printable keyboard events to software.
+    wire ascii_valid = (ascii != 8'h00) && (ascii != 8'h07);
     wire make_ready = ready_flag && !break_pending && ascii_valid;
     assign ready = make_ready;
 
