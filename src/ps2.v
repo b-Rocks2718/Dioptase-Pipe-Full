@@ -6,7 +6,15 @@ module ps2(input ps2_clk, input ps2_data, input clk, input ren, output [15:0]dat
     reg [7:0]scan_decode[0:8'hff];
 
     initial begin
-        $readmemh("./data/scan_decode.hex", scan_decode);
+        // Vivado synthesis runs from an out-of-tree build directory, so a
+        // relative "./data/..." path is not stable there. Use a short memory
+        // filename in synthesis (the file is added via create_project.tcl),
+        // while preserving the existing in-repo relative path for simulation.
+`ifdef SYNTHESIS
+        $readmemh("scan_decode.mem", scan_decode);
+`else
+        $readmemh("./data/scan_decode.mem", scan_decode);
+`endif
     end
 
     wire [15:0]scan_code;
@@ -25,7 +33,7 @@ module ps2(input ps2_clk, input ps2_data, input clk, input ren, output [15:0]dat
     reg extended_pending = 0;
     assign data = keyboard_reg;
     wire [7:0]ascii = scan_decode[scan_code[7:0]];
-    // scan_decode.hex uses 0x07 as an "unmapped/non-printable" sentinel.
+    // scan_decode.mem uses 0x07 as an "unmapped/non-printable" sentinel.
     // Treat both 0x00 and 0x07 as invalid so random/unmapped scan codes do
     // not surface as printable keyboard events to software.
     wire ascii_valid = (ascii != 8'h00) && (ascii != 8'h07);

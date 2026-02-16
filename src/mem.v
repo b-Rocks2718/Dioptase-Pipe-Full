@@ -15,6 +15,25 @@ module mem(input clk, input clk_en, input pipe_clk_en,
     output [15:0]interrupts,
     output icache_stall, output dcache_stall,
     output [31:0]clock_divider
+`ifdef FPGA_USE_DDR_SRAM_ADAPTER
+    ,
+    // External DDR2 interface pins exposed when the Digilent-style DDR bridge
+    // is selected. These are forwarded to `ddr_sram_adapter`.
+    output [12:0]ddr2_addr,
+    output [2:0]ddr2_ba,
+    output ddr2_ras_n,
+    output ddr2_cas_n,
+    output ddr2_we_n,
+    output [0:0]ddr2_ck_p,
+    output [0:0]ddr2_ck_n,
+    output [0:0]ddr2_cke,
+    output [0:0]ddr2_cs_n,
+    output [1:0]ddr2_dm,
+    output [0:0]ddr2_odt,
+    inout [15:0]ddr2_dq,
+    inout [1:0]ddr2_dqs_p,
+    inout [1:0]ddr2_dqs_n
+`endif
 );
     // Display memory map (physical):
     // - Tile framebuffer: 0x7FBD000..0x7FBF57F (80x60 entries, 2 bytes each).
@@ -134,45 +153,41 @@ module mem(input clk, input clk_en, input pipe_clk_en,
     localparam [2:0] SD_INIT_STATE_WAIT_CMD58 = 3'd5;
     localparam integer RAM_WORD_ADDR_BITS = 25; // Covers 0x0000000..0x7FBD000 RAM window.
     localparam integer RAM_ACCESS_LATENCY = 1;  // Keep ISA tests within default cycle budget.
-    // Debug watchpoints for early-kernel scheduler state (collatz image).
-    // Enabled only with +sched_watch so normal runs are unaffected.
-    localparam [26:0] SCHED_WATCH_N_ACTIVE = 27'h0912D4;
-    localparam [26:0] SCHED_WATCH_BOOTSTRAPPING = 27'h090E18;
-    localparam [26:0] SCHED_WATCH_CURRENT_JIFFIES = 27'h090AD8;
-    // Barrier debug watchpoint for collatz image start_barrier.
-    // Enabled only with +barrier_watch.
-    localparam [26:0] BARRIER_WATCH_START_BARRIER = 27'h090A8C;
-    // Queue debug ranges for collatz scheduler state.
-    // Enabled only with +queue_watch.
-    localparam [26:0] QUEUE_WATCH_SLEEPQ_START = 27'h091040;
-    localparam [26:0] QUEUE_WATCH_SLEEPQ_END = 27'h09104C;
-    localparam [26:0] QUEUE_WATCH_READYQ_START = 27'h0912D8;
-    localparam [26:0] QUEUE_WATCH_READYQ_END = 27'h0912E8;
-    localparam [26:0] QUEUE_WATCH_REAPERQ_START = 27'h0912C0;
-    localparam [26:0] QUEUE_WATCH_REAPERQ_END = 27'h0912D0;
-
     // Sprite backing storage (sprites 0..15).
-    reg [31:0]sprite_0_data[0:16'h1ff];
-    reg [31:0]sprite_1_data[0:16'h1ff];
-    reg [31:0]sprite_2_data[0:16'h1ff];
-    reg [31:0]sprite_3_data[0:16'h1ff];
-    reg [31:0]sprite_4_data[0:16'h1ff];
-    reg [31:0]sprite_5_data[0:16'h1ff];
-    reg [31:0]sprite_6_data[0:16'h1ff];
-    reg [31:0]sprite_7_data[0:16'h1ff];
-    reg [31:0]sprite_8_data[0:16'h1ff];
-    reg [31:0]sprite_9_data[0:16'h1ff];
-    reg [31:0]sprite_10_data[0:16'h1ff];
-    reg [31:0]sprite_11_data[0:16'h1ff];
-    reg [31:0]sprite_12_data[0:16'h1ff];
-    reg [31:0]sprite_13_data[0:16'h1ff];
-    reg [31:0]sprite_14_data[0:16'h1ff];
-    reg [31:0]sprite_15_data[0:16'h1ff];
+    (* ram_style = "block" *) reg [31:0]sprite_0_data[0:16'h1ff];
+    (* ram_style = "block" *) reg [31:0]sprite_1_data[0:16'h1ff];
+    (* ram_style = "block" *) reg [31:0]sprite_2_data[0:16'h1ff];
+    (* ram_style = "block" *) reg [31:0]sprite_3_data[0:16'h1ff];
+    (* ram_style = "block" *) reg [31:0]sprite_4_data[0:16'h1ff];
+    (* ram_style = "block" *) reg [31:0]sprite_5_data[0:16'h1ff];
+    (* ram_style = "block" *) reg [31:0]sprite_6_data[0:16'h1ff];
+    (* ram_style = "block" *) reg [31:0]sprite_7_data[0:16'h1ff];
+    (* ram_style = "block" *) reg [31:0]sprite_8_data[0:16'h1ff];
+    (* ram_style = "block" *) reg [31:0]sprite_9_data[0:16'h1ff];
+    (* ram_style = "block" *) reg [31:0]sprite_10_data[0:16'h1ff];
+    (* ram_style = "block" *) reg [31:0]sprite_11_data[0:16'h1ff];
+    (* ram_style = "block" *) reg [31:0]sprite_12_data[0:16'h1ff];
+    (* ram_style = "block" *) reg [31:0]sprite_13_data[0:16'h1ff];
+    (* ram_style = "block" *) reg [31:0]sprite_14_data[0:16'h1ff];
+    (* ram_style = "block" *) reg [31:0]sprite_15_data[0:16'h1ff];
     
     // Tile map + tile/pixel framebuffer storage for the high MMIO regions.
     (* ram_style = "block" *) reg [31:0]tile_map[0:16'h1fff];
     (* ram_style = "block" *) reg [31:0]frame_buffer[0:16'h095f];
+`ifdef FPGA_DISABLE_PIXEL_FB
+    // FPGA fit mode:
+    // - Pixel framebuffer storage is removed to reduce BRAM/LUT pressure.
+    // - Tile layer + sprites remain active for VGA output.
+    // - Pixel framebuffer MMIO writes are ignored and reads return 0.
+`elsif FPGA_USE_DDR_SRAM_ADAPTER
+    // Vivado implementation guard:
+    // - Disable BRAM cascading for the large pixel buffer in DDR-adapter FPGA
+    //   builds. This avoids REQP-1962 cascade ADDR15 DRC failures seen during
+    //   place on inferred RAMB36 chains.
+    (* ram_style = "block", cascade_height = 0 *) reg [31:0]pixel_buffer[0:16'h95ff];
+`else
     (* ram_style = "block" *) reg [31:0]pixel_buffer[0:16'h95ff];
+`endif
 
     integer i;
     initial begin
@@ -199,9 +214,11 @@ module mem(input clk, input clk_en, input pipe_clk_en,
         for (i = 0; i < 16'h2000; i = i + 1) begin
           tile_map[i] = 32'd0;
         end
+`ifndef FPGA_DISABLE_PIXEL_FB
         for (i = 0; i < 16'h9600; i = i + 1) begin
           pixel_buffer[i] = 32'd0;
         end
+`endif
         for (i = 0; i < 16'h960; i = i + 1) begin
           frame_buffer[i] = 32'd0;
         end
@@ -299,7 +316,6 @@ module mem(input clk, input clk_en, input pipe_clk_en,
         pixel_hscroll_reg = 16'd0;
         clock_div_reg = 32'd0;
         pit_cfg_reg = 32'd0;
-        pit_irq_count = 32'd0;
         vga_frame_count = 32'd0;
         in_vblank_prev = 1'b0;
         vga_vblank_irq = 1'b0;
@@ -387,8 +403,6 @@ module mem(input clk, input clk_en, input pipe_clk_en,
     reg [15:0]pixel_hscroll_reg = 0;
     reg [31:0]clock_div_reg = 0;
     reg [31:0]pit_cfg_reg = 0;
-    // Debug-only counter for PIT pulses while +sched_watch is enabled.
-    reg [31:0]pit_irq_count = 0;
     reg [31:0]vga_frame_count = 0;
     reg in_vblank_prev = 1'b0;
     reg vga_vblank_irq = 1'b0;
@@ -681,6 +695,14 @@ module mem(input clk, input clk_en, input pipe_clk_en,
     wire dcache_ram_ready;
     wire dcache_ram_busy;
     wire dcache_ram_error_oob;
+
+`ifdef FPGA_ICACHE_PRELOAD
+    // FPGA builds can request direct I-cache initialization from bios-derived
+    // preload files. Simulation regressions leave this disabled by default.
+    localparam ICACHE_PRELOAD_ENABLE = 1;
+`else
+    localparam ICACHE_PRELOAD_ENABLE = 0;
+`endif
     wire shared_ram_req;
     wire shared_ram_we;
     wire [3:0]shared_ram_be;
@@ -1003,7 +1025,9 @@ module mem(input clk, input clk_en, input pipe_clk_en,
     // RAM path:
     // - Physical addresses in [0, RAM_END) go through cache->ram model.
     // - MMIO/display/sprite windows stay uncached and use direct logic below.
-    cache icache(
+    cache #(
+        .PRELOAD_ENABLE(ICACHE_PRELOAD_ENABLE)
+    ) icache(
         .clk(clk),
         .addr(icache_req_addr),
         .data(32'd0),
@@ -1076,6 +1100,42 @@ module mem(input clk, input clk_en, input pipe_clk_en,
     assign icache_ram_error_oob = icache_req_pending ? shared_ram_error_oob : 1'b0;
     assign dcache_ram_error_oob = dcache_req_pending ? shared_ram_error_oob : 1'b0;
 
+`ifdef FPGA_USE_DDR_SRAM_ADAPTER
+    // FPGA external-memory path:
+    // - Expects a board-integrated DDR->SRAM bridge module named
+    //   `ddr_sram_adapter` to be available in the Vivado project.
+    // - The adapter contract must match this single-port SRAM-like handshake:
+    //   req/we/be/addr/wdata -> ready/rdata with busy backpressure.
+    // - `error_oob` is not meaningful for external DDR; tie low unless the
+    //   adapter explicitly reports address-range violations.
+    ddr_sram_adapter backing_ram(
+        .clk(clk),
+        .rst(1'b0),
+        .req(shared_ram_req),
+        .we(shared_ram_we),
+        .be(shared_ram_be),
+        .addr(shared_ram_addr),
+        .wdata(shared_ram_wdata),
+        .rdata(shared_ram_rdata),
+        .ready(shared_ram_ready),
+        .busy(shared_ram_busy),
+        .error_oob(shared_ram_error_oob),
+        .ddr2_addr(ddr2_addr),
+        .ddr2_ba(ddr2_ba),
+        .ddr2_ras_n(ddr2_ras_n),
+        .ddr2_cas_n(ddr2_cas_n),
+        .ddr2_we_n(ddr2_we_n),
+        .ddr2_ck_p(ddr2_ck_p),
+        .ddr2_ck_n(ddr2_ck_n),
+        .ddr2_cke(ddr2_cke),
+        .ddr2_cs_n(ddr2_cs_n),
+        .ddr2_dm(ddr2_dm),
+        .ddr2_odt(ddr2_odt),
+        .ddr2_dq(ddr2_dq),
+        .ddr2_dqs_p(ddr2_dqs_p),
+        .ddr2_dqs_n(ddr2_dqs_n)
+    );
+`else
     ram #(
         .ADDR_WIDTH(27),
         .WORD_ADDR_BITS(RAM_WORD_ADDR_BITS),
@@ -1093,6 +1153,7 @@ module mem(input clk, input clk_en, input pipe_clk_en,
         .busy(shared_ram_busy),
         .error_oob(shared_ram_error_oob)
     );
+`endif
 
     // SD card 0 DMA engine control/state.
     // Memory beats are acknowledged from the shared cache front-end path.
@@ -1194,8 +1255,6 @@ module mem(input clk, input clk_en, input pipe_clk_en,
     // interrupt bits: [6]=SD1, [4]=VGA vblank, [3]=SD0, [0]=PIT
     assign interrupts = {9'd0, sd1_irq_pending, 1'b0, vga_vblank_irq, sd0_irq_pending, 2'd0, pit_interrupt};
 
-    wire scroll_debug = ($test$plusargs("scroll_debug") != 0);
-
     always @(posedge clk) begin
       // Cache request tracking is intentionally outside clk_en gating so the
       // cache->RAM miss path can complete while the CPU pipeline is paused.
@@ -1225,37 +1284,6 @@ module mem(input clk, input clk_en, input pipe_clk_en,
       if (dcache_req_pending && dcache_success) begin
         dcache_req_pending <= 1'b0;
         if (dcache_req_src == DCACHE_REQ_SRC_CPU) begin
-          if ($test$plusargs("sched_watch")) begin
-            if ((dcache_req_addr == SCHED_WATCH_N_ACTIVE ||
-                 dcache_req_addr == SCHED_WATCH_BOOTSTRAPPING ||
-                 dcache_req_addr == SCHED_WATCH_CURRENT_JIFFIES) ||
-                ((dcache_req_addr >= 27'h000FFEF8) && (dcache_req_addr <= 27'h000FFF0C))) begin
-              $display("[sched_watch] dcache_done addr=%h is_write=%b we=%b wdata=%h rdata=%h",
-                       dcache_req_addr, dcache_req_is_write, dcache_req_we,
-                       dcache_req_wdata, dcache_data_out);
-            end
-          end
-          if ($test$plusargs("barrier_watch") &&
-              (dcache_req_addr == BARRIER_WATCH_START_BARRIER)) begin
-            $display("[barrier_watch][mem] dcache_done addr=%h is_write=%b we=%b wdata=%h rdata=%h",
-                     dcache_req_addr, dcache_req_is_write, dcache_req_we,
-                     dcache_req_wdata, dcache_data_out);
-          end
-          if ($test$plusargs("queue_watch") &&
-              ((dcache_req_addr >= QUEUE_WATCH_SLEEPQ_START && dcache_req_addr <= QUEUE_WATCH_SLEEPQ_END) ||
-               (dcache_req_addr >= QUEUE_WATCH_READYQ_START && dcache_req_addr <= QUEUE_WATCH_READYQ_END) ||
-               (dcache_req_addr >= QUEUE_WATCH_REAPERQ_START && dcache_req_addr <= QUEUE_WATCH_REAPERQ_END))) begin
-            $display("[queue_watch][mem] dcache_done addr=%h is_write=%b we=%b wdata=%h rdata=%h",
-                     dcache_req_addr, dcache_req_is_write, dcache_req_we,
-                     dcache_req_wdata, dcache_data_out);
-          end
-          if (dcache_req_is_write && $test$plusargs("heap_watch") &&
-              (dcache_req_addr == 27'h200000 || dcache_req_addr == 27'h200004 ||
-               dcache_req_addr == 27'h200008 || dcache_req_addr == 27'h20000C ||
-               dcache_req_addr == 27'h200010 || dcache_req_addr == 27'h200014)) begin
-            $display("[heap_watch] dcache_done write addr=%h we=%b wdata=%h",
-                     dcache_req_addr, dcache_req_we, dcache_req_wdata);
-          end
           if (!dcache_req_is_write) begin
             ram_data1_out <= dcache_data_out;
           end
@@ -1276,49 +1304,6 @@ module mem(input clk, input clk_en, input pipe_clk_en,
       // Arbitration policy: CPU D-cache > CPU I-cache > SD0 DMA > SD1 DMA.
       if (!icache_req_pending && !dcache_req_pending && !dma_write_req_pending && pipe_clk_en) begin
         if (cpu_dcache_issue_now) begin
-          if ($test$plusargs("sched_watch")) begin
-            if ((dcache_ram_write_access &&
-                 ((waddr == SCHED_WATCH_N_ACTIVE) ||
-                  (waddr == SCHED_WATCH_BOOTSTRAPPING) ||
-                  (waddr == SCHED_WATCH_CURRENT_JIFFIES) ||
-                  ((waddr >= 27'h000FFEF8) && (waddr <= 27'h000FFF0C)))) ||
-                (dcache_ram_read_access &&
-                 ((raddr1 == SCHED_WATCH_N_ACTIVE) ||
-                  (raddr1 == SCHED_WATCH_BOOTSTRAPPING) ||
-                  (raddr1 == SCHED_WATCH_CURRENT_JIFFIES) ||
-                  ((raddr1 >= 27'h000FFEF8) && (raddr1 <= 27'h000FFF0C))))) begin
-              $display("[sched_watch] cpu_issue addr=%h is_write=%b we=%b wdata=%h",
-                       dcache_ram_write_access ? waddr : raddr1,
-                       dcache_ram_write_access, wen, wdata);
-            end
-          end
-          if ($test$plusargs("barrier_watch") &&
-              ((dcache_ram_write_access && (waddr == BARRIER_WATCH_START_BARRIER)) ||
-               (dcache_ram_read_access && (raddr1 == BARRIER_WATCH_START_BARRIER)))) begin
-            $display("[barrier_watch][mem] cpu_issue addr=%h is_write=%b we=%b wdata=%h",
-                     dcache_ram_write_access ? waddr : raddr1,
-                     dcache_ram_write_access, wen, wdata);
-          end
-          if ($test$plusargs("queue_watch") &&
-              ((dcache_ram_write_access &&
-                ((waddr >= QUEUE_WATCH_SLEEPQ_START && waddr <= QUEUE_WATCH_SLEEPQ_END) ||
-                 (waddr >= QUEUE_WATCH_READYQ_START && waddr <= QUEUE_WATCH_READYQ_END) ||
-                 (waddr >= QUEUE_WATCH_REAPERQ_START && waddr <= QUEUE_WATCH_REAPERQ_END))) ||
-               (dcache_ram_read_access &&
-                ((raddr1 >= QUEUE_WATCH_SLEEPQ_START && raddr1 <= QUEUE_WATCH_SLEEPQ_END) ||
-                 (raddr1 >= QUEUE_WATCH_READYQ_START && raddr1 <= QUEUE_WATCH_READYQ_END) ||
-                 (raddr1 >= QUEUE_WATCH_REAPERQ_START && raddr1 <= QUEUE_WATCH_REAPERQ_END))))) begin
-            $display("[queue_watch][mem] cpu_issue addr=%h is_write=%b we=%b wdata=%h",
-                     dcache_ram_write_access ? waddr : raddr1,
-                     dcache_ram_write_access, wen, wdata);
-          end
-          if (dcache_ram_write_access && $test$plusargs("heap_watch") &&
-              (waddr == 27'h200000 || waddr == 27'h200004 ||
-               waddr == 27'h200008 || waddr == 27'h20000C ||
-               waddr == 27'h200010 || waddr == 27'h200014)) begin
-            $display("[heap_watch] cpu_issue write addr=%h we=%b wdata=%h",
-                     waddr, wen, wdata);
-          end
           dcache_req_pending <= 1'b1;
           dcache_req_is_write <= dcache_ram_write_access;
           dcache_req_we <= dcache_ram_write_access ? wen : 4'd0;
@@ -1377,7 +1362,11 @@ module mem(input clk, input clk_en, input pipe_clk_en,
       display_tile_pixel_x <= tile_pixel_x;
       display_tile_pixel_y <= tile_pixel_y;
       display_tilemap_out <= tile_map[display_tile_word_idx];
+`ifdef FPGA_DISABLE_PIXEL_FB
+      display_pixelbuffer_out <= 32'd0;
+`else
       display_pixelbuffer_out <= pixel_buffer[display_bg_word_idx];
+`endif
       display_bg_pixel_x <= bg_pixel_x;
       display_screen_x <= pixel_x_in;
       display_screen_y <= pixel_y_in;
@@ -1452,6 +1441,34 @@ module mem(input clk, input clk_en, input pipe_clk_en,
         wen_buf <= wen;
         ren_buf <= ren;
 
+`ifdef FPGA_USE_DDR_SRAM_ADAPTER
+        // FPGA DDR build: avoid a second CPU read port on large display-backed
+        // memories. This keeps these arrays in simple BRAM topologies and
+        // avoids LUTRAM blow-up / BRAM cascade DRC failures during place.
+        //
+        // Architectural contract in this mode:
+        // - Display MMIO regions remain writable by CPU and readable by VGA.
+        // - CPU readback of sprite/tile/frame/pixel backing arrays returns 0.
+        sprite_0_data1_out <= 32'd0;
+        sprite_1_data1_out <= 32'd0;
+        sprite_2_data1_out <= 32'd0;
+        sprite_3_data1_out <= 32'd0;
+        sprite_4_data1_out <= 32'd0;
+        sprite_5_data1_out <= 32'd0;
+        sprite_6_data1_out <= 32'd0;
+        sprite_7_data1_out <= 32'd0;
+        sprite_8_data1_out <= 32'd0;
+        sprite_9_data1_out <= 32'd0;
+        sprite_10_data1_out <= 32'd0;
+        sprite_11_data1_out <= 32'd0;
+        sprite_12_data1_out <= 32'd0;
+        sprite_13_data1_out <= 32'd0;
+        sprite_14_data1_out <= 32'd0;
+        sprite_15_data1_out <= 32'd0;
+        tilemap_data1_out <= 32'd0;
+        framebuffer_data1_out <= 32'd0;
+        pixelbuffer_data1_out <= 32'd0;
+`else
         sprite_0_data1_out <= sprite_0_data[sprite_word_idx_r];
         sprite_1_data1_out <= sprite_1_data[sprite_word_idx_r];
         sprite_2_data1_out <= sprite_2_data[sprite_word_idx_r];
@@ -1470,7 +1487,12 @@ module mem(input clk, input clk_en, input pipe_clk_en,
         sprite_15_data1_out <= sprite_15_data[sprite_word_idx_r];
         tilemap_data1_out <= tile_map[tile_word_idx_r];
         framebuffer_data1_out <= frame_buffer[tile_frame_word_idx_r];
+`ifdef FPGA_DISABLE_PIXEL_FB
+        pixelbuffer_data1_out <= 32'd0;
+`else
         pixelbuffer_data1_out <= pixel_buffer[pixel_frame_word_idx_r];
+`endif
+`endif
 
         sd0_spi_start_strobe <= 1'b0;
         sd0_dma_ctrl_write_pulse <= 1'b0;
@@ -1769,9 +1791,6 @@ module mem(input clk, input clk_en, input pipe_clk_en,
         if (pipe_clk_en) begin
         if (pit_we) begin
             pit_cfg_reg <= wdata;
-            if ($test$plusargs("sched_watch")) begin
-              $display("[sched_watch] pit_we data=%h", wdata);
-            end
         end
 
         if (SPRITE_0_START <= waddr && waddr < SPRITE_1_START) begin
@@ -1864,14 +1883,13 @@ module mem(input clk, input clk_en, input pipe_clk_en,
             if (wen[1]) frame_buffer[tile_frame_word_idx_w][15:8]  <= wdata[15:8];
             if (wen[2]) frame_buffer[tile_frame_word_idx_w][23:16] <= wdata[23:16];
             if (wen[3]) frame_buffer[tile_frame_word_idx_w][31:24] <= wdata[31:24];
+`ifndef FPGA_DISABLE_PIXEL_FB
         end else if (PIXEL_FRAMEBUFFER_START <= waddr && waddr < PIXEL_FRAMEBUFFER_END) begin
             if (wen[0]) pixel_buffer[pixel_frame_word_idx_w][7:0]   <= wdata[7:0];
             if (wen[1]) pixel_buffer[pixel_frame_word_idx_w][15:8]  <= wdata[15:8];
             if (wen[2]) pixel_buffer[pixel_frame_word_idx_w][23:16] <= wdata[23:16];
             if (wen[3]) pixel_buffer[pixel_frame_word_idx_w][31:24] <= wdata[31:24];
-        end
-        if (scroll_debug && (waddr[26:2] == HSCROLL_REG[26:2])) begin
-            $display("[scroll_debug] write scroll base=%h waddr=%h wdata=%h wen=%b", HSCROLL_REG, waddr, wdata, wen);
+`endif
         end
         scroll_word_base = {waddr[26:2], 2'b00};
         for (scroll_lane = 0; scroll_lane < 4; scroll_lane = scroll_lane + 1) begin
@@ -2134,15 +2152,6 @@ module mem(input clk, input clk_en, input pipe_clk_en,
             else if (wen[3:2] == 2'b11)
                 sprite_15_y <= sprite_coord_high;
         end
-        end
-        // PIT runs on base clock; track pulse cadence to diagnose
-        // interrupt-induced starvation when scheduler debugging is enabled.
-        if (pit_interrupt) begin
-          pit_irq_count <= pit_irq_count + 32'd1;
-          if ($test$plusargs("sched_watch") &&
-              ((pit_irq_count < 32'd16) || (pit_irq_count[11:0] == 12'd0))) begin
-            $display("[sched_watch] pit_irq count=%0d", pit_irq_count + 32'd1);
-          end
         end
       end
     end

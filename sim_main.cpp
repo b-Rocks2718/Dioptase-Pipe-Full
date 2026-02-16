@@ -297,10 +297,11 @@ void preload_icache_from_hex(Vdioptase &top, const std::string &hex_path) {
         root->dioptase__DOT__mem__DOT__dcache__DOT__dirty1[set] = 0;
         root->dioptase__DOT__mem__DOT__dcache__DOT__tags1[set] = 0;
         for (int word = 0; word < 16; ++word) {
-            root->dioptase__DOT__mem__DOT__icache__DOT__way0[set][word] = 0;
-            root->dioptase__DOT__mem__DOT__icache__DOT__way1[set][word] = 0;
-            root->dioptase__DOT__mem__DOT__dcache__DOT__way0[set][word] = 0;
-            root->dioptase__DOT__mem__DOT__dcache__DOT__way1[set][word] = 0;
+            const int line_word = (set << 4) | word;
+            root->dioptase__DOT__mem__DOT__icache__DOT__way0_words[line_word] = 0;
+            root->dioptase__DOT__mem__DOT__icache__DOT__way1_words[line_word] = 0;
+            root->dioptase__DOT__mem__DOT__dcache__DOT__way0_words[line_word] = 0;
+            root->dioptase__DOT__mem__DOT__dcache__DOT__way1_words[line_word] = 0;
         }
     }
 
@@ -324,8 +325,9 @@ void preload_icache_from_hex(Vdioptase &top, const std::string &hex_path) {
             root->dioptase__DOT__mem__DOT__dcache__DOT__valid0[set] = 1;
             root->dioptase__DOT__mem__DOT__dcache__DOT__dirty0[set] = 0;
             for (int word = 0; word < 16; ++word) {
-                root->dioptase__DOT__mem__DOT__icache__DOT__way0[set][word] = line.words[word];
-                root->dioptase__DOT__mem__DOT__dcache__DOT__way0[set][word] = line.words[word];
+                const int line_word = (set << 4) | word;
+                root->dioptase__DOT__mem__DOT__icache__DOT__way0_words[line_word] = line.words[word];
+                root->dioptase__DOT__mem__DOT__dcache__DOT__way0_words[line_word] = line.words[word];
             }
         } else {
             root->dioptase__DOT__mem__DOT__icache__DOT__tags1[set] = line.tag;
@@ -335,8 +337,9 @@ void preload_icache_from_hex(Vdioptase &top, const std::string &hex_path) {
             root->dioptase__DOT__mem__DOT__dcache__DOT__valid1[set] = 1;
             root->dioptase__DOT__mem__DOT__dcache__DOT__dirty1[set] = 0;
             for (int word = 0; word < 16; ++word) {
-                root->dioptase__DOT__mem__DOT__icache__DOT__way1[set][word] = line.words[word];
-                root->dioptase__DOT__mem__DOT__dcache__DOT__way1[set][word] = line.words[word];
+                const int line_word = (set << 4) | word;
+                root->dioptase__DOT__mem__DOT__icache__DOT__way1_words[line_word] = line.words[word];
+                root->dioptase__DOT__mem__DOT__dcache__DOT__way1_words[line_word] = line.words[word];
             }
         }
         ways_used[set] = static_cast<uint8_t>(way + 1);

@@ -357,6 +357,9 @@ module pipelined_cpu(
     wire tlb_mem_is_store_out;
     wire mem_a_is_store_out;
     wire mem_b_is_store_out;
+    wire tlb_mem_no_alias_1;
+    wire mem_a_no_alias_1;
+    wire mem_b_no_alias_1;
 
     // When a sleep op is already in-flight (reflected by exec_is_sleep_out),
     // freeze execute immediately so the next younger slot cannot advance.
@@ -413,15 +416,15 @@ module pipelined_cpu(
     wire [1:0]mem_b_crmov_mode_type_out;
     // Kernel-mode r31 accesses alias ksp except for crmov instructions.
     // Forwarding/hazard logic uses these tags to avoid mixing alias classes.
-    wire tlb_mem_no_alias_1 = kmode && !tlb_mem_bubble_out &&
+    assign tlb_mem_no_alias_1 = kmode && !tlb_mem_bubble_out &&
       !tlb_mem_tgts_cr_out &&
       (tlb_mem_opcode_out == 5'd31) && (tlb_mem_priv_type_out == 5'd1) &&
       ((tlb_mem_crmov_mode_type_out == 2'd1) || (tlb_mem_crmov_mode_type_out == 2'd3));
-    wire mem_a_no_alias_1 = kmode && !mem_a_bubble_out &&
+    assign mem_a_no_alias_1 = kmode && !mem_a_bubble_out &&
       !mem_a_tgts_cr_out &&
       (mem_a_opcode_out == 5'd31) && (mem_a_priv_type_out == 5'd1) &&
       ((mem_a_crmov_mode_type_out == 2'd1) || (mem_a_crmov_mode_type_out == 2'd3));
-    wire mem_b_no_alias_1 = kmode && !mem_b_bubble_out &&
+    assign mem_b_no_alias_1 = kmode && !mem_b_bubble_out &&
       !mem_b_tgts_cr_out &&
       (mem_b_opcode_out == 5'd31) && (mem_b_priv_type_out == 5'd1) &&
       ((mem_b_crmov_mode_type_out == 2'd1) || (mem_b_crmov_mode_type_out == 2'd3));

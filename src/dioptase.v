@@ -18,21 +18,43 @@ module dioptase(
     output sd1_spi_clk,
     output sd1_spi_mosi,
     input sd1_spi_miso
+`ifdef FPGA_USE_DDR_SRAM_ADAPTER
+    ,
+    // DDR2 pins are only present when FPGA external-memory mode is enabled.
+    output [12:0]ddr2_addr,
+    output [2:0]ddr2_ba,
+    output ddr2_ras_n,
+    output ddr2_cas_n,
+    output ddr2_we_n,
+    output [0:0]ddr2_ck_p,
+    output [0:0]ddr2_ck_n,
+    output [0:0]ddr2_cke,
+    output [0:0]ddr2_cs_n,
+    output [1:0]ddr2_dm,
+    output [0:0]ddr2_odt,
+    inout [15:0]ddr2_dq,
+    inout [1:0]ddr2_dqs_p,
+    inout [1:0]ddr2_dqs_n
+`endif
 `endif
 );
     
-    reg [1023:0] vcdfile;
-    initial begin
-      if ($value$plusargs("vcd=%s", vcdfile)) begin
-        $dumpfile(vcdfile);
-        $dumpvars(0, dioptase);
-      end else begin
-        $dumpfile("cpu.vcd");
-        `ifdef SIMULATION
+    // Simulation-only waveform dumping. Vivado synthesis does not support
+    // these system tasks and must not see them.
+    `ifndef SYNTHESIS
+      reg [1023:0] vcdfile;
+      initial begin
+        if ($value$plusargs("vcd=%s", vcdfile)) begin
+          $dumpfile(vcdfile);
           $dumpvars(0, dioptase);
-        `endif
+        end else begin
+          $dumpfile("cpu.vcd");
+          `ifdef SIMULATION
+            $dumpvars(0, dioptase);
+          `endif
+        end
       end
-    end
+    `endif
 
     `ifdef SIMULATION
       wire clk;
@@ -149,6 +171,23 @@ module dioptase(
         .sd1_spi_cs(sd1_spi_cs), .sd1_spi_clk(sd1_spi_clk), .sd1_spi_mosi(sd1_spi_mosi), .sd1_spi_miso(sd1_spi_miso),
         .interrupts(mem_interrupts), .icache_stall(icache_stall), .dcache_stall(dcache_stall),
         .clock_divider(clock_divider)
+`ifdef FPGA_USE_DDR_SRAM_ADAPTER
+        ,
+        .ddr2_addr(ddr2_addr),
+        .ddr2_ba(ddr2_ba),
+        .ddr2_ras_n(ddr2_ras_n),
+        .ddr2_cas_n(ddr2_cas_n),
+        .ddr2_we_n(ddr2_we_n),
+        .ddr2_ck_p(ddr2_ck_p),
+        .ddr2_ck_n(ddr2_ck_n),
+        .ddr2_cke(ddr2_cke),
+        .ddr2_cs_n(ddr2_cs_n),
+        .ddr2_dm(ddr2_dm),
+        .ddr2_odt(ddr2_odt),
+        .ddr2_dq(ddr2_dq),
+        .ddr2_dqs_p(ddr2_dqs_p),
+        .ddr2_dqs_n(ddr2_dqs_n)
+`endif
     );
 
 endmodule

@@ -117,8 +117,9 @@ module sd_dma_controller(
   //   address increments by 4 in the same cycle as mem_ready_set.
   //   This avoids one-beat lag between request issue and DMA cursor update.
   // - At terminal beat, done is set and busy clears.
+  reg consume_mem_beat;
+
   always @(posedge clk) begin
-    reg consume_mem_beat;
     consume_mem_beat = 1'b0;
 
     if (ctrl_write) begin

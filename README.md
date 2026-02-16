@@ -108,6 +108,83 @@ Atomic instructions are cracked in decode:
 
 Decode keeps ownership (`decode_stall`) until the micro-op sequence drains.
 
+## Cache Subsystem (Pipeline <-> mem.v <-> RAM)
+
+This core uses separate instruction and data caches inside `mem.v`:
+
+- `icache`: services fetch-side RAM-window reads.
+- `dcache`: services load/store RAM-window accesses and DMA RAM reads.
+
+Both instances use the same `cache.v` implementation:
+
+- 2-way set-associative.
+- 256 sets.
+- 64-byte lines (16 words).
+- 32 KiB total capacity per cache.
+- write-back, write-allocate behavior.
+- one request in flight per cache (cache module invariant).
+- pseudo-LRU replacement via per-set `evictee` bit.
+
+### Address Coverage
+
+Only physical addresses in `[0, RAM_END)` are cache-backed. In `mem.v`,
+`RAM_END` is the start of the tile framebuffer window (`0x7FBD000`), so MMIO,
+tile/frame/pixel buffers, and sprite windows are uncached direct paths.
+
+### Pipeline Interface
+
+Fetch-side (I-cache path):
+
+- `cpu.v` drives `mem_read0_addr`, `mem_read0_tag` (slot id), and
+  `icache_req_valid`.
+- `mem.v` returns `mem_read0_accepted` when that fetch request is actually
+  issued to the cache path.
+- Completion returns `mem_read0_data` plus `mem_read0_data_tag`; `cpu.v`
+  enqueues fetch packets only when returned tag matches the expected slot id.
+
+Load/store-side (D-cache path):
+
+- `cpu.v` drives `mem_re`/`mem_read1_addr` for loads and
+  `mem_we`/`mem_write_addr`/`mem_write_data` for stores.
+- `mem.v` routes RAM-window accesses through `dcache`; non-RAM windows use
+  uncached MMIO/display/sprite logic.
+
+Stall behavior:
+
+- `icache_stall` is asserted while an I-cache request is pending.
+- `dcache_stall` is asserted for in-flight CPU D-cache requests and for CPU
+  conflicts with DMA-backed memory traffic.
+- `cpu.v` forms `pipe_clk_en = clk_en && !icache_stall && !dcache_stall`.
+- Cache miss/refill tracking in `mem.v` intentionally runs outside `clk_en`
+  gating, so miss handling continues while the pipeline is paused.
+
+### Backing RAM Interface And Arbitration
+
+Each cache uses an SRAM-like backend contract from `cache.v`:
+
+- request: `ram_req`, `ram_we`, `ram_be`, `ram_addr`, `ram_wdata`
+- response: `ram_rdata`, `ram_ready`, `ram_busy`, `ram_error_oob`
+
+`mem.v` multiplexes I-cache, D-cache, and direct DMA writes onto one shared
+`ram.v` instance (single-port backing RAM). Request issue policy is:
+
+1. CPU D-cache request
+2. CPU I-cache request
+3. SD0 DMA memory request
+4. SD1 DMA memory request
+
+Miss service behavior in `cache.v`:
+
+- hit: complete directly (writes set dirty bit).
+- clean miss: 16-beat line refill.
+- dirty miss: 16-beat writeback of victim, then 16-beat refill.
+
+### DMA Coherency Hook
+
+SD->RAM DMA writes bypass `dcache` and write backing RAM directly. To prevent
+stale cached RAM lines after those writes, `mem.v` pulses line invalidation for
+both caches (`icache_inv_pulse`, `dcache_inv_pulse`) at `dma_inv_addr`.
+
 ## TLB And Exceptions
 
 TLB format and behavior follow the emulator/ISA model:
@@ -191,6 +268,46 @@ Verilator flags:
   removes the default cycle cap.
 - `--sd0 <file.bin>`: preload SD card 0 from a raw block image.
 - `--sd1 <file.bin>`: preload SD card 1 from a raw block image.
+
+## Vivado / FPGA Bring-Up
+
+This repo includes an FPGA flow scaffold for Nexys A7:
+
+- `fpga/dioptase_fpga_top.v`
+- `fpga/create_project.tcl`
+- `fpga/nexys_a7_template.xdc`
+- `scripts/gen_icache_preload.py`
+- `scripts/sync_pipeline_to_windows.sh`
+
+Typical flow:
+
+1. In WSL, generate direct I-cache preload files from BIOS image:
+
+```bash
+cd Dioptase-CPUs/Dioptase-Pipe-Full
+./scripts/gen_icache_preload.py --input ../../Dioptase-OS/build/bios.hex --out-dir ./data
+```
+
+2. In WSL, mirror `Dioptase-Pipe-Full` to your Windows filesystem:
+
+```bash
+cd Dioptase-CPUs/Dioptase-Pipe-Full
+./scripts/sync_pipeline_to_windows.sh --dest /mnt/c/Users/<you>/Dioptase/Dioptase-CPUs/Dioptase-Pipe-Full
+```
+
+3. Fill `fpga/nexys_a7_template.xdc` from Digilent's Nexys A7 master XDC.
+4. Run Vivado batch project creation in Windows:
+
+```powershell
+cd C:\Users\<you>\Dioptase\Dioptase-CPUs\Dioptase-Pipe-Full
+vivado -mode batch -source .\fpga\create_project.tcl
+```
+
+For full detail and options, see `fpga/README.md`.
+Notably, `create_project.tcl` supports enabling external DDR adapter mode via
+`enable_ddr_adapter=1` (5th `-tclargs` argument), which switches `mem.v`
+backing RAM from `ram.v` to `ddr_sram_adapter`, and auto-adds Digilent
+`ram2ddr_refcomp` RTL/constraints when present under the repo root.
 
 ## Tests
 
