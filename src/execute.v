@@ -105,8 +105,6 @@ module execute(input clk, input clk_en, input halt,
     atomic_base_buf = 32'd0;
     atomic_data_buf = 32'd0;
     atomic_fadd_sum_buf = 32'd0;
-    stall_hist_1 = 1'b0;
-    stall_hist_2 = 1'b0;
   end
 
   reg [4:0]reg_tgt_buf_a_1;
@@ -131,11 +129,10 @@ module execute(input clk, input clk_en, input halt,
   reg [31:0]atomic_base_buf;
   reg [31:0]atomic_data_buf;
   reg [31:0]atomic_fadd_sum_buf;
-  reg stall_hist_1;
-  reg stall_hist_2;
-  // Keep forwarding buffers valid for up to two cycles after a stall clears,
-  // so repeated slots can still see the most recent writeback values.
-  wire stall_buf_valid = stall || stall_hist_1 || stall_hist_2;
+  // Stall-capture forwarding is only valid while decode is actively stalled.
+  // Leaving these buffers visible after stall release can override fresh
+  // regfile reads for a new slot that happens to reuse the same source reg.
+  wire stall_buf_valid = stall;
 
   wire is_mem_w = (5'd3 <= opcode && opcode <= 5'd5);
   wire is_mem_d = (5'd6 <= opcode && opcode <= 5'd8);
@@ -157,8 +154,8 @@ module execute(input clk, input clk_en, input halt,
   wire buf_a1_gpr_valid = !tgts_cr_buf_a;
   wire buf_b1_gpr_valid = !tgts_cr_buf_b;
 
-  // Forwarding priority is newest-to-oldest pipeline producer, then local
-  // stall history buffers, then regfile output.
+  // Forwarding priority is newest-to-oldest pipeline producer, then active
+  // stall-capture buffers, then regfile output.
   wire ex1_hit_s1 = s1_nonzero && ex1_gpr_valid && (tgt_out_1 == s_1) &&
     ((s_1 != 5'd31) || (source_no_alias_s1 == ex1_no_alias));
   wire ex2_hit_s1 = s1_nonzero && (tgt_out_2 == s_1);
@@ -361,7 +358,7 @@ module execute(input clk, input clk_en, input halt,
     !bubble_in && !stall && !exc_in_wb && !rfe_in_wb &&
     !halt && !exec_dup && (exc_in == 8'd0);
   wire [31:0]flags_restore_mux = crmv_write_flg_live ? crmv_write_data : flags_restore;
-  wire flags_we = rfe_in_wb || crmv_write_flg_live;
+  wire flags_we = crmv_write_flg_live;
 
   wire [31:0]alu_rslt;
   // Do not let killed/exception slots mutate live flags.
@@ -455,8 +452,6 @@ always @(posedge clk) begin
       replay_dedup_active <= 1'b0;
       stall_prev <= 1'b0;
       last_decode_sig <= {REPLAY_SIG_W{1'b0}};
-      stall_hist_1 <= 1'b0;
-      stall_hist_2 <= 1'b0;
     end else begin
               // jump and link
       result_1 <= slot_kill ? 32'd0 :
@@ -542,7 +537,6 @@ always @(posedge clk) begin
                  decode_pc_out, slot_id, opcode, slot_kill, exec_dup, stall, exc_in_wb, rfe_in_wb,
                  exc_in, is_atomic, is_fetch_add_atomic, atomic_step, is_load, is_store, mem_addr, we_next, store_data_next);
       end
-
       is_load_out <= slot_kill ? 1'b0 : is_load;
       is_store_out <= slot_kill ? 1'b0 : is_store;
       tgts_cr_out <= slot_kill ? 1'b0 : (tgts_cr && cr_write_allowed);
@@ -602,8 +596,6 @@ always @(posedge clk) begin
 `endif
 
       stall_prev <= stall;
-      stall_hist_2 <= stall_hist_1;
-      stall_hist_1 <= stall;
     end
   end
 end

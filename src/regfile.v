@@ -24,6 +24,7 @@ module regfile(input clk, input clk_en,
     for (i = 0; i < 32; i = i + 1)
       regfile[i] = 32'd0;
     ksp = 32'd0;
+    regfile[1] = 32'h424242; // for testing, pre-load r1 with a non-zero value to verify it gets overwritten by return values
   end
 
   // compiler puts return value in r1

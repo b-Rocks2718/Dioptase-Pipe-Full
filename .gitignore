@@ -6,4 +6,5 @@
 *.vvp
 *.bit
 *.log
+debugging/
 obj_dir/

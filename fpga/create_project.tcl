@@ -92,6 +92,10 @@ set ps2_decode_file [file join $repo_dir "data" "scan_decode.mem"]
 if {![file exists $ps2_decode_file]} {
     error "Missing PS/2 decode table: $ps2_decode_file"
 }
+set bios_mem_file [file join $repo_dir "data" "bios.mem"]
+if {![file exists $bios_mem_file]} {
+    error "Missing BIOS memory image: $bios_mem_file"
+}
 
 set icache_preload_files [list \
     [file join $repo_dir "data" "icache_way0.mem"] \
@@ -108,7 +112,7 @@ if {$enable_icache_preload} {
     }
 }
 
-set mem_init_files [list $ps2_decode_file]
+set mem_init_files [list $ps2_decode_file $bios_mem_file]
 if {$enable_icache_preload} {
     set mem_init_files [concat $mem_init_files $icache_preload_files]
 }
@@ -141,18 +145,18 @@ if {$enable_ddr_adapter} {
 }
 set_property verilog_define $existing_defines [current_fileset]
 
-# Configure pixel framebuffer resource mode for DDR-adapter FPGA builds.
+# Configure pixel framebuffer resource mode.
+# This can be disabled independently of DDR-adapter mode to reduce BRAM usage.
 set existing_defines [get_property verilog_define [current_fileset]]
 set existing_defines [lsearch -inline -all -not -exact $existing_defines "FPGA_DISABLE_PIXEL_FB=1"]
-if {$enable_ddr_adapter && !$enable_pixel_fb} {
+if {!$enable_pixel_fb} {
     if {[lsearch -exact $existing_defines "FPGA_DISABLE_PIXEL_FB=1"] < 0} {
         lappend existing_defines "FPGA_DISABLE_PIXEL_FB=1"
     }
     puts "==> Pixel framebuffer DISABLED (tile+sprite VGA kept)"
-} elseif {$enable_ddr_adapter && $enable_pixel_fb} {
-    puts "==> Pixel framebuffer ENABLED"
 } else {
-    puts "==> Pixel framebuffer setting ignored (DDR adapter disabled)"
+    puts "==> Pixel framebuffer ENABLED"
+    puts "==> NOTE: enable_pixel_fb=1 can exceed BRAM capacity on xc7a100t."
 }
 set_property verilog_define $existing_defines [current_fileset]
 

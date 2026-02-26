@@ -17,7 +17,8 @@ module dioptase(
     output sd1_spi_cs,
     output sd1_spi_clk,
     output sd1_spi_mosi,
-    input sd1_spi_miso
+    input sd1_spi_miso,
+    output [15:0] LED
 `ifdef FPGA_USE_DDR_SRAM_ADAPTER
     ,
     // DDR2 pins are only present when FPGA external-memory mode is enabled.
@@ -97,7 +98,11 @@ module dioptase(
     wire clk_en;
     wire pipe_clk_en;
 
+
+
     // CPU
+    assign LED = ret_val[15:0];
+
     wire [31:0]ret_val;
     wire [31:0]cpu_pc;
     wire [3:0]flags;
@@ -112,6 +117,40 @@ module dioptase(
 
     wire icache_stall;
     wire dcache_stall;
+
+    // Minimal memory handshake shim (no cache):
+    // - Accept every fetch request when the core clock enable is asserted.
+    // - Return a tag delayed by one enabled cycle to align with mem.v's
+    //   1-cycle synchronous RAM read latency.
+    // - Report no cache-induced stalls.
+    //
+    // Preconditions:
+    // - mem.v uses clk_en to latch raddr0 and update rdata0 on the next cycle.
+    // - pipelined_cpu expects mem_read0_data_tag to match the slot id for the
+    //   instruction word presented on mem_read0_data.
+    //
+    // Postconditions:
+    // - Frontend queue pairing sees a stable tag match when memory returns data.
+    // - No cache stalls are asserted in this minimal configuration.
+    //
+    // Invariants:
+    // - mem_read0_data_tag always equals mem_read0_tag sampled two clk_en cycles ago.
+    // - icache_stall/dcache_stall remain deasserted for all cycles.
+    //
+    // CPU state assumptions:
+    // - Single-core, no external cache hierarchy is modeled in this top-level.
+    reg [31:0]mem_read0_tag_d0 = 32'd0;
+    reg [31:0]mem_read0_tag_d1 = 32'd0;
+    always @(posedge clk) begin
+      if (clk_en) begin
+        mem_read0_tag_d0 <= mem_read0_tag;
+        mem_read0_tag_d1 <= mem_read0_tag_d0;
+      end
+    end
+    assign mem_read0_data_tag = mem_read0_tag_d1;
+    assign mem_read0_accepted = mem_read0_valid && clk_en;
+    assign icache_stall = 1'b0;
+    assign dcache_stall = 1'b0;
 
     pipelined_cpu cpu(
         clk, interrupts, clock_divider,
@@ -156,10 +195,9 @@ module dioptase(
         .rx_ready(uart_rx_ready)
     );
 
-    mem mem(.clk(clk), .clk_en(clk_en), .pipe_clk_en(pipe_clk_en),
-        .raddr0(mem_read0_addr), .rtag0(mem_read0_tag), .icache_req_valid(mem_read0_valid),
-        .rdata0(mem_read0_data), .rdata0_tag(mem_read0_data_tag),
-        .icache_issue_accepted(mem_read0_accepted),
+    mem mem(.clk(clk), .clk_en(clk_en),
+        .raddr0(mem_read0_addr),
+        .rdata0(mem_read0_data),
         .ren(mem_read_en), .raddr1(mem_read1_addr), .rdata1(mem_read1_data),
         .wen(mem_write_en), .waddr(mem_write_addr), .wdata(mem_write_data),
         .ps2_ren(ps2_ren),
@@ -169,7 +207,7 @@ module dioptase(
         .uart_rx_data(uart_rx_data), .uart_rx_ren(uart_rx_en),
         .sd_spi_cs(sd_spi_cs), .sd_spi_clk(sd_spi_clk), .sd_spi_mosi(sd_spi_mosi), .sd_spi_miso(sd_spi_miso),
         .sd1_spi_cs(sd1_spi_cs), .sd1_spi_clk(sd1_spi_clk), .sd1_spi_mosi(sd1_spi_mosi), .sd1_spi_miso(sd1_spi_miso),
-        .interrupts(mem_interrupts), .icache_stall(icache_stall), .dcache_stall(dcache_stall),
+        .interrupts(mem_interrupts),
         .clock_divider(clock_divider)
 `ifdef FPGA_USE_DDR_SRAM_ADAPTER
         ,

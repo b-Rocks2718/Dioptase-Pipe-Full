@@ -5,7 +5,7 @@
 // Interface contract:
 // - `result` is purely combinational from current inputs.
 // - `flags` update on clock edge when `bubble` is false and `clk_en` is true.
-// - `flags_we` restores flags from `flags_restore` (used by rfe flow).
+// - `flags_we` restores flags from `flags_restore`
 // - Flag bit order is {overflow, sign, zero, carry}.
 module ALU(input clk, input clk_en,
     input [4:0]op, input [4:0]alu_op, input [31:0]s_1, input [31:0]s_2, input [31:0]pc,

@@ -507,6 +507,7 @@ module pipelined_cpu(
       fetch_addr, addr, exec_op1,
       decode_tlb_we_out, exec_op2, decode_tlbi_out,
       decode_exc_out, decode_tlbc_out,
+      exc_in_wb,
       exec_mem_re, tlb_addr1_write_req,
       exc_tlb_0, exc_tlb_1,
       tlb_out_0, tlb_out_1, tlb_read
@@ -555,7 +556,6 @@ module pipelined_cpu(
       decode_has_halt || exec_has_halt || tlb_mem_has_halt ||
       mem_a_has_halt || mem_b_has_halt || wb_halt
     );
-
     // Frontend packet queue update.
     // This decouples fetch return timing from decode stalls and keeps
     // instruction/pc/slot/exception packets paired.

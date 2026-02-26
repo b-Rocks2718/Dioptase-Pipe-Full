@@ -5,6 +5,7 @@
 // - status_clear: clears sticky status fields.
 // - mem_ready_set: handshake that one memory beat completed.
 // - sd_ready_set: handshake that SD-side processing completed for init or one block.
+// - sd_error_set/sd_error_code_in: SD-side failure completion for init or one block.
 // - mem_data_in: memory read data for RAM->SD direction.
 // - sd_data_block_in(+valid): completed 512-byte SD->RAM block from SPI side.
 // Outputs:
@@ -29,6 +30,8 @@ module sd_dma_controller(
   input status_clear,
   input mem_ready_set,
   input sd_ready_set,
+  input sd_error_set,
+  input [31:0] sd_error_code_in,
   input [31:0] mem_data_in,
   input [4095:0] sd_data_block_in,
   input sd_data_block_in_valid,
@@ -56,6 +59,10 @@ module sd_dma_controller(
   localparam [31:0] SD_DMA_ERR_BUSY = 32'd1;
   localparam [31:0] SD_DMA_ERR_ZERO_LEN = 32'd2;
   localparam [31:0] SD_DMA_ERR_NOT_INIT = 32'd3;
+  // SD-side command/transfer failures are surfaced by the outer SPI glue.
+  localparam [31:0] SD_DMA_ERR_SD_INIT_FAILED = 32'd4;
+  localparam [31:0] SD_DMA_ERR_SD_READ_FAILED = 32'd5;
+  localparam [31:0] SD_DMA_ERR_SD_WRITE_FAILED = 32'd6;
   localparam [31:0] WORDS_PER_BLOCK = 32'd128;  // 512 bytes / 4 bytes per beat
   localparam [6:0] BLOCK_LAST_WORD_INDEX = 7'd127;
 
@@ -198,7 +205,28 @@ module sd_dma_controller(
         mem_ready_pending <= 1'b1;
       end
     end
-    if (sd_ready_set && busy && waiting_for_sd_ready) begin
+    if (sd_error_set && busy && waiting_for_sd_ready) begin
+      // SD-side glue reports command/transfer failure for either SD_INIT or
+      // a block transfer. Complete the operation with ERR so software does not
+      // treat stale RAM contents as valid payload.
+      busy <= 0;
+      done <= 1;
+      error <= 1;
+      if (sd_error_code_in != 32'd0) begin
+        error_code <= sd_error_code_in;
+      end else if (doing_init) begin
+        error_code <= SD_DMA_ERR_SD_INIT_FAILED;
+      end else if (direction == 1'b0) begin
+        error_code <= SD_DMA_ERR_SD_READ_FAILED;
+      end else begin
+        error_code <= SD_DMA_ERR_SD_WRITE_FAILED;
+      end
+      doing_init <= 0;
+      waiting_for_sd_ready <= 0;
+      transfer_words_remaining <= 0;
+      buffer_index <= 0;
+      mem_ready_pending <= 0;
+    end else if (sd_ready_set && busy && waiting_for_sd_ready) begin
       if (doing_init) begin
         // SD init completes once SD-side glue reports completion.
         busy <= 0;

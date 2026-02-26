@@ -12,6 +12,7 @@ module tlb(
   input kmode, input [31:0]pid,
   input [31:0]addr0, input [31:0]addr1, input [31:0]read_addr,
   input we, input [31:0]write_data, input invalidate, input [7:0]exc_in, input clear,
+  input exc_commit,
   input addr1_read_req, input addr1_write_req,
   output reg [7:0]exc_out0, output reg [7:0]exc_out1,
   output reg [26:0]addr0_out, output reg [26:0]addr1_out,
@@ -31,6 +32,10 @@ module tlb(
   reg [26:0]cache_val[0:TLB_ENTRIES-1];
 
   reg [TLB_INDEX_W-1:0]eviction_tgt;
+  // Sticky exception-vector selector for data port1.
+  // This decouples vector fetch from one-cycle `exc_out1` transitions and
+  // avoids redirecting data-side reads/writes away from their true address.
+  reg [7:0]exc_vector_pending;
   integer i;
 
   initial begin
@@ -43,6 +48,7 @@ module tlb(
     eviction_tgt = {TLB_INDEX_W{1'b0}};
     exc_out0 = 8'd0;
     exc_out1 = 8'd0;
+    exc_vector_pending = 8'd0;
     addr0_out = 27'd0;
     addr1_out = 27'd0;
     read_addr_out = 27'd0;
@@ -117,7 +123,13 @@ module tlb(
   wire [7:0]exc0_next = fetch_fault ? (kmode ? 8'h83 : 8'h82) : 8'd0;
   wire [7:0]exc1_next = (exc_in != 8'd0) ? exc_in :
     (data_fault ? (kmode ? 8'h83 : 8'h82) : 8'd0);
-  wire is_exc = (exc_out1 != 8'd0);
+  wire pending_vector_valid = (exc_vector_pending != 8'd0);
+  // Exception vector fetch must win immediately when a trap appears on this
+  // cycle (`exc1_next`), otherwise writeback can consume stale `mem_out_1` and
+  // redirect to a non-IVT address.
+  wire live_vector_valid = (exc1_next != 8'd0);
+  wire [7:0]vector_code_now = live_vector_valid ? exc1_next : exc_vector_pending;
+  wire use_exc_vector = live_vector_valid || pending_vector_valid;
 
   // Physical memory bus is 27-bit in this FPGA pipeline implementation.
   // ISA TLB value stores PPN[14:0] in value[26:12].
@@ -180,6 +192,7 @@ module tlb(
           cache_valid[i] <= 1'b0;
         end
         eviction_tgt <= {TLB_INDEX_W{1'b0}};
+        exc_vector_pending <= 8'd0;
       end else if (invalidate) begin
         // Match emulator invalidation behavior: invalidate PID+VPN private
         // entry and any global entry with the same VPN.
@@ -200,11 +213,21 @@ module tlb(
         end
       end
 
+      // Capture any live exception code for vector lookup and hold it until
+      // writeback consumes the trap. This prevents stale/non-vector addr1
+      // selections on the exact trap-entry cycle.
+      if (exc1_next != 8'd0) begin
+        exc_vector_pending <= exc1_next;
+      end else if (exc_commit) begin
+        exc_vector_pending <= 8'd0;
+      end
+
       exc_out0 <= exc0_next;
       exc_out1 <= exc1_next;
       addr0_out <= addr0_phys_next;
-      addr1_out <= is_exc ? {17'b0, exc_out1, 2'b0} : addr1_phys_next;
+      addr1_out <= use_exc_vector ? {17'b0, vector_code_now, 2'b0} : addr1_phys_next;
       read_addr_out <= read_hit ? read_value : 27'd0;
+
     end
   end
 

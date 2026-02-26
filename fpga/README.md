@@ -105,6 +105,12 @@ To keep VGA tile/sprite output but remove the large pixel framebuffer path
 vivado -mode batch -source .\fpga\create_project.tcl -tclargs .\build\vivado 1 1 1 1 0
 ```
 
+With in-repo RAM (no DDR adapter), use:
+
+```powershell
+vivado -mode batch -source .\fpga\create_project.tcl -tclargs .\build\vivado 1 1 1 0 0
+```
+
 The sixth argument is `enable_pixel_fb` (1=keep pixel framebuffer,
 0=disable pixel framebuffer MMIO storage and use tile/sprite-only VGA composition).
 

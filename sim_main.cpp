@@ -272,78 +272,24 @@ ICacheImage parse_hex_for_icache(const std::string &hex_path) {
     return image;
 }
 
-// Replace reset-time L1 cache contents with the boot hex image while leaving
-// backing RAM uninitialized from +hex.
-void preload_icache_from_hex(Vdioptase &top, const std::string &hex_path) {
-    if (hex_path.empty()) {
-        return;
+// Load a sanitized readmemh image into the mem.v RAM backing store.
+// Inputs: top (Verilated DUT), boot_hex_path (readmemh file path).
+// Preconditions: boot_hex_path is non-empty and points to a readable readmemh file,
+// and this is called before any simulated cycle depends on RAM contents.
+// Postconditions: RAM words covered by the image are initialized; other words are unchanged.
+// Invariants: Only mem.v RAM contents are mutated (no CPU/peripheral state changes).
+// CPU state assumptions: called before the CPU executes any cycle; interrupt/MMU state is irrelevant.
+void load_boot_hex_into_ram(Vdioptase &top, const std::string &boot_hex_path) {
+    if (boot_hex_path.empty()) {
+        std::cerr << "Missing boot hex path for RAM initialization." << std::endl;
+        std::exit(EXIT_FAILURE);
     }
 
-    ICacheImage image = parse_hex_for_icache(hex_path);
-    auto *root = top.rootp;
-    for (int set = 0; set < 256; ++set) {
-        root->dioptase__DOT__mem__DOT__icache__DOT__evictee[set] = 0;
-        root->dioptase__DOT__mem__DOT__icache__DOT__valid0[set] = 0;
-        root->dioptase__DOT__mem__DOT__icache__DOT__dirty0[set] = 0;
-        root->dioptase__DOT__mem__DOT__icache__DOT__tags0[set] = 0;
-        root->dioptase__DOT__mem__DOT__icache__DOT__valid1[set] = 0;
-        root->dioptase__DOT__mem__DOT__icache__DOT__dirty1[set] = 0;
-        root->dioptase__DOT__mem__DOT__icache__DOT__tags1[set] = 0;
-        root->dioptase__DOT__mem__DOT__dcache__DOT__evictee[set] = 0;
-        root->dioptase__DOT__mem__DOT__dcache__DOT__valid0[set] = 0;
-        root->dioptase__DOT__mem__DOT__dcache__DOT__dirty0[set] = 0;
-        root->dioptase__DOT__mem__DOT__dcache__DOT__tags0[set] = 0;
-        root->dioptase__DOT__mem__DOT__dcache__DOT__valid1[set] = 0;
-        root->dioptase__DOT__mem__DOT__dcache__DOT__dirty1[set] = 0;
-        root->dioptase__DOT__mem__DOT__dcache__DOT__tags1[set] = 0;
-        for (int word = 0; word < 16; ++word) {
-            const int line_word = (set << 4) | word;
-            root->dioptase__DOT__mem__DOT__icache__DOT__way0_words[line_word] = 0;
-            root->dioptase__DOT__mem__DOT__icache__DOT__way1_words[line_word] = 0;
-            root->dioptase__DOT__mem__DOT__dcache__DOT__way0_words[line_word] = 0;
-            root->dioptase__DOT__mem__DOT__dcache__DOT__way1_words[line_word] = 0;
-        }
-    }
-
-    std::array<uint8_t, 256> ways_used{};
-    for (const ICacheLineImage &line : image.lines) {
-        const uint8_t set = line.set;
-        const uint8_t way = ways_used[set];
-        if (way >= 2) {
-            std::cerr << "Boot image '" << hex_path
-                      << "' maps more than two tags to icache set " << static_cast<unsigned>(set)
-                      << "; cannot preload this image into 2-way icache without RAM backing."
-                      << std::endl;
-            std::exit(EXIT_FAILURE);
-        }
-
-        if (way == 0) {
-            root->dioptase__DOT__mem__DOT__icache__DOT__tags0[set] = line.tag;
-            root->dioptase__DOT__mem__DOT__icache__DOT__valid0[set] = 1;
-            root->dioptase__DOT__mem__DOT__icache__DOT__dirty0[set] = 0;
-            root->dioptase__DOT__mem__DOT__dcache__DOT__tags0[set] = line.tag;
-            root->dioptase__DOT__mem__DOT__dcache__DOT__valid0[set] = 1;
-            root->dioptase__DOT__mem__DOT__dcache__DOT__dirty0[set] = 0;
-            for (int word = 0; word < 16; ++word) {
-                const int line_word = (set << 4) | word;
-                root->dioptase__DOT__mem__DOT__icache__DOT__way0_words[line_word] = line.words[word];
-                root->dioptase__DOT__mem__DOT__dcache__DOT__way0_words[line_word] = line.words[word];
-            }
-        } else {
-            root->dioptase__DOT__mem__DOT__icache__DOT__tags1[set] = line.tag;
-            root->dioptase__DOT__mem__DOT__icache__DOT__valid1[set] = 1;
-            root->dioptase__DOT__mem__DOT__icache__DOT__dirty1[set] = 0;
-            root->dioptase__DOT__mem__DOT__dcache__DOT__tags1[set] = line.tag;
-            root->dioptase__DOT__mem__DOT__dcache__DOT__valid1[set] = 1;
-            root->dioptase__DOT__mem__DOT__dcache__DOT__dirty1[set] = 0;
-            for (int word = 0; word < 16; ++word) {
-                const int line_word = (set << 4) | word;
-                root->dioptase__DOT__mem__DOT__icache__DOT__way1_words[line_word] = line.words[word];
-                root->dioptase__DOT__mem__DOT__dcache__DOT__way1_words[line_word] = line.words[word];
-            }
-        }
-        ways_used[set] = static_cast<uint8_t>(way + 1);
-    }
+    const QData ram_depth = static_cast<QData>(
+        sizeof(top.rootp->dioptase__DOT__mem__DOT__ram) /
+        sizeof(top.rootp->dioptase__DOT__mem__DOT__ram[0]));
+    VL_READMEM_N(true, 32, ram_depth, 0, boot_hex_path,
+                 &(top.rootp->dioptase__DOT__mem__DOT__ram), 0, ~0ULL);
 }
 
 class TerminalRawGuard {
@@ -1236,7 +1182,9 @@ public:
         }
         if (cdiv_debug_) {
             const uint32_t pc = top.rootp->dioptase__DOT__cpu__DOT__decode_pc_out;
-            const bool watch_pc = (pc >= 0x00000520u && pc <= 0x00000560u) || (pc < 0x00000100u);
+            const bool watch_pc =
+                (pc >= 0x00000380u && pc <= 0x00000580u) ||
+                (pc < 0x00000100u);
             if (watch_pc) {
                 const uint8_t d_op = static_cast<uint8_t>(top.rootp->dioptase__DOT__cpu__DOT__decode_opcode_out);
                 const uint8_t e_op = static_cast<uint8_t>(top.rootp->dioptase__DOT__cpu__DOT__exec_opcode_out);
@@ -1389,7 +1337,9 @@ public:
         peripherals_.attach(top_);
         top_.clk = 0;
         top_.eval();
-        preload_icache_from_hex(top_, boot_hex_path);
+
+        //load_boot_hex_into_ram(top_, boot_hex_path);
+
         top_.eval();
     }
 
@@ -1475,7 +1425,9 @@ bool run_headless(Vdioptase &top, uint64_t max_cycles, bool keyboard_via_uart,
 
     top.clk = 0;
     top.eval();
-    preload_icache_from_hex(top, boot_hex_path);
+
+    //load_boot_hex_into_ram(top, boot_hex_path);
+
     top.eval();
     if (Verilated::gotFinish()) {
         cycles_executed = 0;
@@ -1544,6 +1496,10 @@ int main(int argc, char **argv) {
     std::vector<std::string> verilator_args;
     Options opts = parse_options(argc, argv, verilator_args);
     opts.boot_hex_path = sanitize_hex_file(opts.boot_hex_path);
+
+    if (!opts.boot_hex_path.empty()) {
+        verilator_args.emplace_back("+hex=" + opts.boot_hex_path);
+    }
 
     const std::string cycle_plusarg = "+cycle_limit=" + std::to_string(opts.max_cycles);
     verilator_args.push_back(cycle_plusarg);

@@ -14,12 +14,14 @@
 //   yet implement a reset port, so this is reserved for future integration.
 // - PS2_CLK/PS2_DATA: keyboard input.
 // - uart_rx: UART RX line from USB-UART bridge.
-// - sd*_miso: SD card MISO lines.
+// - SD_CD / SD_DAT[0]: onboard microSD detect + MISO in SPI mode.
+// - sd1_spi_miso: optional second SD card MISO via PMOD.
 //
 // Outputs:
 // - VGA timing + RGB outputs.
 // - uart_tx: UART TX line to USB-UART bridge.
-// - sd* SPI lines: cs/clk/mosi.
+// - SD_RESET / SD_SCK / SD_CMD / SD_DAT[3]: onboard microSD signals.
+// - sd1 SPI lines: cs/clk/mosi for optional second card via PMOD.
 //
 //------------------------------------------------------------------------------
 module dioptase_fpga_top(
@@ -34,14 +36,16 @@ module dioptase_fpga_top(
     output wire [3:0] VGA_B,
     input wire uart_rx,
     output wire uart_tx,
-    output wire sd0_spi_cs,
-    output wire sd0_spi_clk,
-    output wire sd0_spi_mosi,
-    input wire sd0_spi_miso,
+    output wire SD_RESET,
+    input wire SD_CD,
+    output wire SD_SCK,
+    output wire SD_CMD,
+    inout wire [3:0] SD_DAT,
     output wire sd1_spi_cs,
     output wire sd1_spi_clk,
     output wire sd1_spi_mosi,
-    input wire sd1_spi_miso
+    input wire sd1_spi_miso,
+    output wire [15:0] LED
 `ifdef FPGA_USE_DDR_SRAM_ADAPTER
     ,
     // DDR2 physical interface routed to the onboard memory.
@@ -63,6 +67,29 @@ module dioptase_fpga_top(
 );
     // Reserve reset input for future explicit reset wiring.
     wire unused_cpu_resetn = CPU_RESETN;
+    // Onboard microSD controller-facing SPI wires.
+    wire sd0_spi_cs;
+    wire sd0_spi_clk;
+    wire sd0_spi_mosi;
+    wire sd0_spi_miso;
+    // Card-detect is currently not consumed by the SoC.
+    wire unused_sd_cd = SD_CD;
+
+    // SPI-mode mapping for Nexys A7 microSD connector:
+    //   SD_SCK  <= SPI clock
+    //   SD_CMD  <= SPI MOSI
+    //   SD_DAT0 => SPI MISO
+    //   SD_DAT3 <= SPI chip-select
+    // Nexys A7 microSD slot power/reset control:
+    // - Drive SD_RESET low so the slot is enabled after FPGA configuration.
+    // - SD_DAT[1:2] are not used in SPI mode.
+    assign SD_RESET = 1'b0;
+    assign SD_SCK = sd0_spi_clk;
+    assign SD_CMD = sd0_spi_mosi;
+    assign SD_DAT[3] = sd0_spi_cs;
+    assign SD_DAT[2] = 1'bz;
+    assign SD_DAT[1] = 1'bz;
+    assign sd0_spi_miso = SD_DAT[0];
 
     dioptase u_dioptase (
         .clk(CLK100MHZ),
@@ -83,21 +110,6 @@ module dioptase_fpga_top(
         .sd1_spi_clk(sd1_spi_clk),
         .sd1_spi_mosi(sd1_spi_mosi),
         .sd1_spi_miso(sd1_spi_miso),
-`ifdef FPGA_USE_DDR_SRAM_ADAPTER
-        .ddr2_addr(ddr2_addr),
-        .ddr2_ba(ddr2_ba),
-        .ddr2_ras_n(ddr2_ras_n),
-        .ddr2_cas_n(ddr2_cas_n),
-        .ddr2_we_n(ddr2_we_n),
-        .ddr2_ck_p(ddr2_ck_p),
-        .ddr2_ck_n(ddr2_ck_n),
-        .ddr2_cke(ddr2_cke),
-        .ddr2_cs_n(ddr2_cs_n),
-        .ddr2_dm(ddr2_dm),
-        .ddr2_odt(ddr2_odt),
-        .ddr2_dq(ddr2_dq),
-        .ddr2_dqs_p(ddr2_dqs_p),
-        .ddr2_dqs_n(ddr2_dqs_n)
-`endif
+        .LED(LED)
     );
 endmodule
