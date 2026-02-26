@@ -159,7 +159,7 @@ module mem(input clk, input clk_en,
     // - Synthesis keeps a small RAM so FPGA builds still fit without DDR.
     // - Addresses beyond RAM_WORDS are treated as unmapped (reads return 0, writes dropped).
     // - RAM_END remains the architectural aperture start for MMIO; do not change it for ISA semantics.
-    localparam [24:0] RAM_WORDS = 25'd32768;   // 128KB RAM (32K words)
+    localparam [24:0] RAM_WORDS = 25'd65536;   // 256KB RAM (32K words)
     localparam [24:0] RAM_LAST_WORD = RAM_WORDS - 25'd1;
     localparam integer RAM_WORD_ADDR_BITS = $clog2(RAM_WORDS);
     (* ram_style = "block" *) reg [31:0]ram[0:RAM_LAST_WORD];
