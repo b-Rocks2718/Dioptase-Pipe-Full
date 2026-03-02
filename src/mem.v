@@ -212,6 +212,9 @@ module mem(input clk, input clk_en,
     reg [31:0]sd0_dma_sd_error_code = 32'd0;
     reg sd0_dma_mem_ready_pulse = 1'b0;
     reg [31:0]sd0_dma_mem_data_in = 32'd0;
+    // Shared low-RAM port1 returns DMA read data one cycle later. These flags
+    // preserve which SD DMA channel owns that returning word.
+    reg ram_p1_sd0_read_pending = 1'b0;
 
     reg [31:0]sd1_dma_mem_addr_reg = 32'd0;
     reg [31:0]sd1_dma_block_reg = 32'd0;
@@ -233,6 +236,7 @@ module mem(input clk, input clk_en,
     reg [31:0]sd1_dma_sd_error_code = 32'd0;
     reg sd1_dma_mem_ready_pulse = 1'b0;
     reg [31:0]sd1_dma_mem_data_in = 32'd0;
+    reg ram_p1_sd1_read_pending = 1'b0;
 
     wire [47:0]sd0_cmd_buffer_out;
     wire sd0_cmd_buffer_out_valid;
@@ -297,12 +301,25 @@ module mem(input clk, input clk_en,
 
     integer i;
     initial begin
-        //if (!$value$plusargs("hex=%s", hexfile)) begin
-        //    $display("ERROR: no +hex=<file> argument given!");
-        //    $finish;
-        //end
+        `ifdef VERILATOR_TEST
+          if (!$value$plusargs("hex=%s", hexfile)) begin
+            $display("ERROR: no +hex=<file> argument given!");
+            $finish;
+          end
 
-        $readmemh("bios.mem", ram);  // mem is your instruction/data memory
+          $readmemh(hexfile, ram);  // mem is your instruction/data memory
+        `elsif SIMULATION
+          if (!$value$plusargs("hex=%s", hexfile)) begin
+            $display("ERROR: no +hex=<file> argument given!");
+            $finish;
+          end
+
+          $readmemh(hexfile, ram);  // mem is your instruction/data memory
+        `elsif SYNTHESIS
+          $readmemh("bios.mem", ram);  // mem is your instruction/data memory
+        `else  
+          $readmemh("./data/bios.mem", ram);  // mem is your instruction/data memory
+        `endif
 
         for (i = 0; i < 16'h200; i = i + 1) begin
           sprite_0_data[i] = 32'hf000f000;
@@ -358,6 +375,7 @@ module mem(input clk, input clk_en,
         sd0_dma_sd_error_code = 32'd0;
         sd0_dma_mem_ready_pulse = 1'b0;
         sd0_dma_mem_data_in = 32'd0;
+        ram_p1_sd0_read_pending = 1'b0;
 
         sd1_spi_cmd_buffer = 48'd0;
         sd1_spi_data_buffer = 4096'd0;
@@ -379,6 +397,7 @@ module mem(input clk, input clk_en,
         sd1_dma_sd_error_code = 32'd0;
         sd1_dma_mem_ready_pulse = 1'b0;
         sd1_dma_mem_data_in = 32'd0;
+        ram_p1_sd1_read_pending = 1'b0;
         raddr0_buf = 27'd0;
         raddr1_buf = 27'd0;
         waddr_buf = 27'd0;
@@ -709,9 +728,22 @@ module mem(input clk, input clk_en,
     // Preserve existing priority/serialization: any SD0 request (even a read)
     // blocks SD1 from using the shared RAM port this cycle.
     wire ram_p1_sd1_slot = !cpu_uses_ram_port1 && !sd0_dma_mem_req_active && sd1_dma_mem_req_active;
+    wire ram_p1_sd0_read_req =
+      ram_p1_sd0_slot &&
+      sd0_dma_mem_request_read &&
+      sd0_dma_ram_addr_in_range &&
+      !ram_p1_sd0_read_pending;
+    wire ram_p1_sd1_read_req =
+      ram_p1_sd1_slot &&
+      sd1_dma_mem_request_read &&
+      sd1_dma_ram_addr_in_range &&
+      !ram_p1_sd1_read_pending;
     wire ram_p1_sd0_write_req = ram_p1_sd0_slot && sd0_dma_mem_request_write;
     wire ram_p1_sd1_write_req = ram_p1_sd1_slot && sd1_dma_mem_request_write;
-    wire ram_p1_do_read = ram_p1_cpu_read_req;
+    wire ram_p1_do_read =
+      ram_p1_cpu_read_req ||
+      ram_p1_sd0_read_req ||
+      ram_p1_sd1_read_req;
     wire ram_p1_do_write =
       ram_p1_cpu_write_req ||
       (ram_p1_sd0_write_req && sd0_dma_ram_addr_in_range) ||
@@ -719,6 +751,8 @@ module mem(input clk, input clk_en,
     wire [RAM_WORD_ADDR_BITS-1:0] ram_p1_addr =
       ram_p1_cpu_write_req ? ram_word_idx_w :
       ram_p1_cpu_read_req ? ram_word_idx_r1 :
+      ram_p1_sd0_read_req ? sd0_dma_ram_word_idx :
+      ram_p1_sd1_read_req ? sd1_dma_ram_word_idx :
       ram_p1_sd0_write_req ? sd0_dma_ram_word_idx :
       ram_p1_sd1_write_req ? sd1_dma_ram_word_idx :
       {RAM_WORD_ADDR_BITS{1'b0}};
@@ -1614,6 +1648,16 @@ module mem(input clk, input clk_en,
         //   port1 command bundle.
         // - Keep `ram[]` accesses here in a single read/write template so
         //   Vivado can infer true dual-port BRAM (port0 read + port1 rw).
+        // - DMA read completions consume the previous cycle's `ram_data1_out`
+        //   before any new port1 read updates that register.
+        if (ram_p1_sd0_read_pending) begin
+          sd0_dma_mem_data_in <= ram_data1_out;
+          sd0_dma_mem_ready_pulse <= 1'b1;
+        end
+        if (ram_p1_sd1_read_pending) begin
+          sd1_dma_mem_data_in <= ram_data1_out;
+          sd1_dma_mem_ready_pulse <= 1'b1;
+        end
         if (ram_p1_do_write) begin
           if (ram_p1_wen[0]) ram[ram_p1_addr][7:0]   <= ram_p1_wdata[7:0];
           if (ram_p1_wen[1]) ram[ram_p1_addr][15:8]  <= ram_p1_wdata[15:8];
@@ -1622,8 +1666,10 @@ module mem(input clk, input clk_en,
         end else if (ram_p1_do_read) begin
           ram_data1_out <= ram[ram_p1_addr];
         end
-        // DMA RAM reads are intentionally disabled here; preserve the current
-        // handshake behavior (write beats ack, read beats stall).
+        // Track which DMA channel launched the synchronous BRAM read so the
+        // returning word can be acknowledged on the next cycle.
+        ram_p1_sd0_read_pending <= ram_p1_sd0_read_req;
+        ram_p1_sd1_read_pending <= ram_p1_sd1_read_req;
         if (ram_p1_sd0_write_req) begin
           sd0_dma_mem_ready_pulse <= 1'b1;
         end

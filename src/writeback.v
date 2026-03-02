@@ -20,6 +20,7 @@ module writeback(input clk, input clk_en, input halt, input bubble_in,
 
     input [7:0]exc_in,
     input tgts_cr, input [4:0]priv_type, input [1:0]crmov_mode_type,
+    input no_alias_in_1,
 
     output [31:0]result_out_1,
     output [31:0]result_out_2,
@@ -38,13 +39,11 @@ module writeback(input clk, input clk_en, input halt, input bubble_in,
   assign rfe_in_wb = opcode == 5'd31 && priv_type == 5'd3 && !bubble_in && !exc_in_wb;
   assign rfi_in_wb = rfe_in_wb && crmov_mode_type[1] == 1'b1 && !bubble_in && !exc_in_wb;
   assign tlb_exc_in_wb = exc_in_wb && (exc_in == 8'h82 || exc_in == 8'h83);
-  wire crmov_gpr_write = (opcode == 5'd31) && (priv_type == 5'd1) &&
-    ((crmov_mode_type == 2'd1) || (crmov_mode_type == 2'd3)) &&
-    !bubble_in && !exc_in_wb;
-  
   assign halt_out = (opcode == 5'd31) && (priv_type == 5'd2) && (crmov_mode_type == 2'd2) && !bubble_in && !exc_in_wb;
   assign sleep_out = (opcode == 5'd31) && (priv_type == 5'd2) && (crmov_mode_type == 2'd1) && !bubble_in && !exc_in_wb;
-  assign wb_no_alias_1 = crmov_gpr_write;
+  // `no_alias_in_1` is carried in lockstep with the backend slot so writeback
+  // does not have to re-decode opcode metadata on the alias forwarding path.
+  assign wb_no_alias_1 = no_alias_in_1;
   assign wb_no_alias_2 = 1'b0;
 
   // Writeback payload must stay cycle-aligned with `we1/we2`.

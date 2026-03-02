@@ -164,18 +164,25 @@ module cregfile(input clk, input clk_en,
   // 0=psr(level), 1=pid, 2=isr, 3=imr, 4=epc, 5=flg, 6=efg, 7=tlb_fault_addr,
   // 8=ksp (not yet wired through this module), 9=cid (read-only 0)
   reg [31:0]cregfile[0:5'd31];
+  // Timing note:
+  // - `kmode` fans out into reg aliasing and execute forwarding logic.
+  // - Driving it from a wide combinational `(cr0 != 0)` compare creates a long
+  //   path from every PSR bit into the execute-stage critical cone.
+  // - Keep a 1-bit shadow that is updated with the same precedence as `cr0`.
+  reg kmode_q;
   integer i;
 
   initial begin
     for (i = 0; i < 32; i = i + 1)
       cregfile[i] = 32'd0;
     cregfile[0] = 1;
+    kmode_q = 1'b1;
   end
 
   assign pid = cregfile[1];
   assign epc_out = cregfile[4];
   assign efg_out = cregfile[6];
-  assign kmode = (cregfile[0] != 32'd0);
+  assign kmode = kmode_q;
 
   // Interrupt delivery is gated by IMR enable bit at bit31.
   assign interrupt_state = cregfile[3][31] ?
@@ -200,6 +207,8 @@ module cregfile(input clk, input clk_en,
       // cr9 (cid) is read-only. cr2 has dedicated write logic below.
       if (waddr0 != 5'd2 && waddr0 != 5'd9)
         cregfile[waddr0] <= wdata0;
+      if (waddr0 == 5'd0)
+        kmode_q <= (wdata0 != 32'd0);
     end
 
     if (clk_en) begin
@@ -227,6 +236,7 @@ module cregfile(input clk, input clk_en,
 
         // increment state
         cregfile[0] <= cregfile[0] + 32'h1;
+        kmode_q <= ((cregfile[0] + 32'h1) != 32'd0);
       end else if (rfe_commit) begin
         // Return-from-exception decrements privilege nesting.
         // Like exception entry, this must not be gated by decode stall.
@@ -237,6 +247,7 @@ module cregfile(input clk, input clk_en,
 
         // decrement state
         cregfile[0] <= cregfile[0] - 32'h1;
+        kmode_q <= ((cregfile[0] - 32'h1) != 32'd0);
       end
       exc_in_wb_prev <= exc_in_wb;
       rfe_in_wb_prev <= rfe_in_wb;

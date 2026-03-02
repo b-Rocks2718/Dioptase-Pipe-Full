@@ -65,6 +65,7 @@ module pipelined_cpu(
     wire [31:0]exec_result_out_2;
     wire [31:0]addr;
     wire [31:0]store_data;
+    wire [3:0]mem_we_pipe;
 
     wire [31:0]reg_write_data_1;
     wire [31:0]reg_write_data_2;
@@ -262,6 +263,16 @@ module pipelined_cpu(
     wire decode_is_store_out;
     wire decode_is_branch_out;
     wire decode_is_post_inc_out;
+    wire decode_exec_rhs_uses_imm_out;
+    wire decode_exec_subi_lhs_imm_out;
+    wire decode_exec_is_crmov_out;
+    wire decode_exec_is_mem_w_out;
+    wire decode_exec_is_mem_d_out;
+    wire decode_exec_is_mem_b_out;
+    wire decode_exec_mem_addr_abs_out;
+    wire decode_exec_mem_addr_rel_out;
+    wire decode_exec_mem_addr_rel_imm_out;
+    wire decode_exec_is_tlbr_out;
     wire decode_is_atomic_out;
     wire decode_is_fetch_add_atomic_out;
     wire [1:0]decode_atomic_step_out;
@@ -305,7 +316,12 @@ module pipelined_cpu(
       decode_alu_op_out, decode_imm_out, decode_branch_code_out,
       decode_bubble_out, ret_val,
       decode_is_load_out, decode_is_store_out, decode_is_branch_out,
-      decode_is_post_inc_out, decode_tgts_cr_out, 
+      decode_is_post_inc_out, decode_tgts_cr_out,
+      decode_exec_rhs_uses_imm_out, decode_exec_subi_lhs_imm_out,
+      decode_exec_is_crmov_out,
+      decode_exec_is_mem_w_out, decode_exec_is_mem_d_out, decode_exec_is_mem_b_out,
+      decode_exec_mem_addr_abs_out, decode_exec_mem_addr_rel_out,
+      decode_exec_mem_addr_rel_imm_out, decode_exec_is_tlbr_out,
       decode_priv_type_out, decode_crmov_mode_type_out,
       decode_tlb_we_out, decode_tlbi_out, decode_tlbc_out, interrupt_state,
       decode_is_atomic_out, decode_is_fetch_add_atomic_out, decode_atomic_step_out,
@@ -333,6 +349,7 @@ module pipelined_cpu(
     wire exec_is_load_out;
     wire exec_is_store_out;
     wire exec_is_tlbr_out;
+    wire exec_no_alias_1;
     
     assign curr_pc = decode_pc_out;
 
@@ -384,7 +401,13 @@ module pipelined_cpu(
       tlb_mem_bubble_out, tlb_mem_is_load_out,
       mem_a_bubble_out, mem_a_is_load_out, 
       mem_b_bubble_out, mem_b_is_load_out,
-      decode_is_post_inc_out, decode_tgts_cr_out, decode_priv_type_out,
+      decode_is_post_inc_out, decode_tgts_cr_out,
+      decode_exec_rhs_uses_imm_out, decode_exec_subi_lhs_imm_out,
+      decode_exec_is_crmov_out,
+      decode_exec_is_mem_w_out, decode_exec_is_mem_d_out, decode_exec_is_mem_b_out,
+      decode_exec_mem_addr_abs_out, decode_exec_mem_addr_rel_out,
+      decode_exec_mem_addr_rel_imm_out, decode_exec_is_tlbr_out,
+      decode_priv_type_out,
       decode_crmov_mode_type_out, decode_exc_out, exc_in_wb, efg_curr, rfe_in_wb,
       kmode,
       decode_is_atomic_out, decode_is_fetch_add_atomic_out, decode_atomic_step_out,
@@ -397,7 +420,7 @@ module pipelined_cpu(
       exec_tgts_cr_out, exec_priv_type_out, exec_crmov_mode_type_out,
       exec_exc_out, exec_pc_out,
       exec_op1, exec_op2,
-      exec_op1_out, exec_op2_out
+      exec_op1_out, exec_op2_out, exec_no_alias_1
     );
 
     assign exec_is_sleep_out = (exec_opcode_out == 5'd31) &&
@@ -414,20 +437,6 @@ module pipelined_cpu(
     wire [1:0]tlb_mem_crmov_mode_type_out;
     wire [1:0]mem_a_crmov_mode_type_out;
     wire [1:0]mem_b_crmov_mode_type_out;
-    // Kernel-mode r31 accesses alias ksp except for crmov instructions.
-    // Forwarding/hazard logic uses these tags to avoid mixing alias classes.
-    assign tlb_mem_no_alias_1 = kmode && !tlb_mem_bubble_out &&
-      !tlb_mem_tgts_cr_out &&
-      (tlb_mem_opcode_out == 5'd31) && (tlb_mem_priv_type_out == 5'd1) &&
-      ((tlb_mem_crmov_mode_type_out == 2'd1) || (tlb_mem_crmov_mode_type_out == 2'd3));
-    assign mem_a_no_alias_1 = kmode && !mem_a_bubble_out &&
-      !mem_a_tgts_cr_out &&
-      (mem_a_opcode_out == 5'd31) && (mem_a_priv_type_out == 5'd1) &&
-      ((mem_a_crmov_mode_type_out == 2'd1) || (mem_a_crmov_mode_type_out == 2'd3));
-    assign mem_b_no_alias_1 = kmode && !mem_b_bubble_out &&
-      !mem_b_tgts_cr_out &&
-      (mem_b_opcode_out == 5'd31) && (mem_b_priv_type_out == 5'd1) &&
-      ((mem_b_crmov_mode_type_out == 2'd1) || (mem_b_crmov_mode_type_out == 2'd3));
     // Sleep must not squash older backend stages; only architectural halt does.
     tlb_memory tlb_memory(clk, pipe_clk_en, halt,
       exec_bubble_out, exec_opcode_out, exec_tgt_out_1, exec_tgt_out_2,
@@ -435,7 +444,7 @@ module pipelined_cpu(
       exec_is_load_out, exec_is_store_out, exec_is_tlbr_out,
       exec_pc_out, exec_exc_out, exec_tgts_cr_out, exec_priv_type_out, 
       exec_crmov_mode_type_out, exec_flags_out, exec_op1_out, exec_op2_out,
-      exc_in_wb, rfe_in_wb, tlb_read, exc_tlb_1, exec_mem_re, exec_store_data, exec_mem_we,
+      exec_no_alias_1, exc_in_wb, rfe_in_wb, tlb_read, exc_tlb_1, exec_mem_re, exec_store_data, exec_mem_we,
 
       tlb_mem_tgt_out_1, tlb_mem_tgt_out_2, 
       tlb_mem_result_out_1, tlb_mem_result_out_2,
@@ -443,7 +452,8 @@ module pipelined_cpu(
       tlb_mem_is_load_out, tlb_mem_is_store_out,
       tlb_mem_pc_out, tlb_mem_exc_out, tlb_mem_tgts_cr_out, tlb_mem_priv_type_out,
       tlb_mem_crmov_mode_type_out, tlb_mem_flags_out, tlb_mem_op1_out, tlb_mem_op2_out,
-      mem_re_pipe, store_data, mem_we
+      tlb_mem_no_alias_1,
+      mem_re_pipe, store_data, mem_we_pipe
     );
 
     memory memory_a(clk, pipe_clk_en, halt,
@@ -452,14 +462,15 @@ module pipelined_cpu(
       tlb_mem_is_load_out, tlb_mem_is_store_out,
       tlb_mem_pc_out, tlb_mem_exc_out, tlb_mem_tgts_cr_out, tlb_mem_priv_type_out, 
       tlb_mem_crmov_mode_type_out, tlb_mem_flags_out, tlb_mem_op1_out, tlb_mem_op2_out,
-      exc_in_wb, rfe_in_wb,
+      tlb_mem_no_alias_1, exc_in_wb, rfe_in_wb,
 
       mem_a_tgt_out_1, mem_a_tgt_out_2, 
       mem_a_result_out_1, mem_a_result_out_2,
       mem_a_opcode_out, mem_a_addr_out, mem_a_bubble_out,
       mem_a_is_load_out, mem_a_is_store_out,
       mem_a_pc_out, mem_a_exc_out, mem_a_tgts_cr_out, mem_a_priv_type_out,
-      mem_a_crmov_mode_type_out, mem_a_flags_out, mem_a_op1_out, mem_a_op2_out
+      mem_a_crmov_mode_type_out, mem_a_flags_out, mem_a_op1_out, mem_a_op2_out,
+      mem_a_no_alias_1
     );
 
     memory memory_b(clk, pipe_clk_en, halt,
@@ -468,14 +479,15 @@ module pipelined_cpu(
       mem_a_is_load_out, mem_a_is_store_out,
       mem_a_pc_out, mem_a_exc_out, mem_a_tgts_cr_out, mem_a_priv_type_out, 
       mem_a_crmov_mode_type_out, mem_a_flags_out, mem_a_op1_out, mem_a_op2_out,
-      exc_in_wb, rfe_in_wb,
+      mem_a_no_alias_1, exc_in_wb, rfe_in_wb,
 
       mem_b_tgt_out_1, mem_b_tgt_out_2, 
       mem_b_result_out_1, mem_b_result_out_2,
       mem_b_opcode_out, mem_b_addr_out, mem_b_bubble_out,
       mem_b_is_load_out, mem_b_is_store_out,
       mem_b_pc_out, mem_b_exc_out, mem_b_tgts_cr_out, mem_b_priv_type_out,
-      mem_b_crmov_mode_type_out, mem_b_flags_out, mem_b_op1_out, mem_b_op2_out
+      mem_b_crmov_mode_type_out, mem_b_flags_out, mem_b_op1_out, mem_b_op2_out,
+      mem_b_no_alias_1
     );
 
     writeback writeback(clk, pipe_clk_en, halt, mem_b_bubble_out, mem_b_tgt_out_1, mem_b_tgt_out_2,
@@ -483,6 +495,7 @@ module pipelined_cpu(
       mem_b_opcode_out,
       mem_b_result_out_1, mem_b_result_out_2, mem_out_1, mem_b_addr_out,
       mem_b_exc_out, mem_b_tgts_cr_out, mem_b_priv_type_out, mem_b_crmov_mode_type_out,
+      mem_b_no_alias_1,
       
       reg_write_data_1, reg_write_data_2,
       reg_we_1, wb_tgt_out_1, wb_result_out_1,
@@ -535,18 +548,29 @@ module pipelined_cpu(
       (mem_b_opcode_out == 5'd31) &&
       (mem_b_priv_type_out == 5'd2) &&
       (mem_b_crmov_mode_type_out == 2'd2);
+    // Data-side TLB faults are produced by `tlb` one stage before tlb_memory
+    // repackages them into a synthetic exception slot. Treat the raw TLB code
+    // as "live" immediately so frontend fetch starts tracking the IVT vector
+    // as soon as the fault is known, rather than one pipe stage later.
+    wire tlb_data_exc_live = (exc_tlb_1 == 8'h82) || (exc_tlb_1 == 8'h83);
     wire decode_exc_live = (decode_exc_out != 8'd0);
     wire exec_exc_live = !exec_bubble_out && (exec_exc_out != 8'd0);
     wire tlb_mem_exc_live = !tlb_mem_bubble_out && (tlb_mem_exc_out != 8'd0);
     wire mem_a_exc_live = !mem_a_bubble_out && (mem_a_exc_out != 8'd0);
     wire mem_b_exc_live = !mem_b_bubble_out && (mem_b_exc_out != 8'd0);
     // Any live exception in-flight keeps halt gating off and forces flush.
-    assign exception_in_pipe = decode_exc_live || exec_exc_live ||
+    assign exception_in_pipe = tlb_data_exc_live ||
+      decode_exc_live || exec_exc_live ||
       tlb_mem_exc_live || mem_a_exc_live || mem_b_exc_live || exc_in_wb;
     // Exception/interrupt entry jumps through IVT[exc_code].
     // Keep memory port 1 read-enabled while an exception is in flight so
     // mem_out_1 is refreshed with the IVT entry even without an explicit load.
+    //
+    // Writes must be suppressed while an exception is pending. Otherwise the
+    // shared data port can prioritize a store beat and starve the IVT read
+    // that fetches the redirect target for the older trap.
     assign mem_re = mem_re_pipe || exception_in_pipe;
+    assign mem_we = exception_in_pipe ? 4'd0 : mem_we_pipe;
     wire wb_redirect = exc_in_wb || rfe_in_wb || wb_halt || wb_sleep;
     // Frontend replay redirects fetch only; full pipeline flush remains tied to
     // architectural redirects (branch/exception/rfe/halt/sleep).

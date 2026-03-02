@@ -33,8 +33,11 @@ module tlb(
 
   reg [TLB_INDEX_W-1:0]eviction_tgt;
   // Sticky exception-vector selector for data port1.
-  // This decouples vector fetch from one-cycle `exc_out1` transitions and
-  // avoids redirecting data-side reads/writes away from their true address.
+  //
+  // In this in-order core, the oldest in-flight exception must own the IVT
+  // fetch until writeback consumes it. A younger decode-side trap (for example
+  // a privileged `halt` fetched after an older data TLB miss) must not
+  // overwrite the pending vector address before the older trap redirects.
   reg [7:0]exc_vector_pending;
   integer i;
 
@@ -128,7 +131,10 @@ module tlb(
   // cycle (`exc1_next`), otherwise writeback can consume stale `mem_out_1` and
   // redirect to a non-IVT address.
   wire live_vector_valid = (exc1_next != 8'd0);
-  wire [7:0]vector_code_now = live_vector_valid ? exc1_next : exc_vector_pending;
+  // Once a vector is pending, keep returning that older vector until
+  // writeback commits the trap. This preserves precise exception ordering.
+  wire [7:0]vector_code_now = pending_vector_valid ? exc_vector_pending :
+    exc1_next;
   wire use_exc_vector = live_vector_valid || pending_vector_valid;
 
   // Physical memory bus is 27-bit in this FPGA pipeline implementation.
@@ -216,10 +222,10 @@ module tlb(
       // Capture any live exception code for vector lookup and hold it until
       // writeback consumes the trap. This prevents stale/non-vector addr1
       // selections on the exact trap-entry cycle.
-      if (exc1_next != 8'd0) begin
-        exc_vector_pending <= exc1_next;
-      end else if (exc_commit) begin
+      if (exc_commit) begin
         exc_vector_pending <= 8'd0;
+      end else if (!pending_vector_valid && (exc1_next != 8'd0)) begin
+        exc_vector_pending <= exc1_next;
       end
 
       exc_out0 <= exc0_next;

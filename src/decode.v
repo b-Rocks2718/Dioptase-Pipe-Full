@@ -43,6 +43,11 @@ module decode(input clk, input clk_en,
     output reg bubble_out, output [31:0]ret_val,
     output reg is_load_out, output reg is_store_out, output reg is_branch_out,
     output reg is_post_inc_out, output reg tgts_cr_out,
+    output reg exec_rhs_uses_imm_out, output reg exec_subi_lhs_imm_out,
+    output reg exec_is_crmov_out,
+    output reg exec_is_mem_w_out, output reg exec_is_mem_d_out, output reg exec_is_mem_b_out,
+    output reg exec_mem_addr_abs_out, output reg exec_mem_addr_rel_out,
+    output reg exec_mem_addr_rel_imm_out, output reg exec_is_tlbr_out,
     output reg [4:0]priv_type_out, output reg [1:0]crmov_mode_type_out,
     output reg tlb_we, output reg tlbi, output reg tlbc, output [31:0]interrupt_state,
     output reg is_atomic_out, output reg is_fetch_add_atomic_out,
@@ -368,16 +373,37 @@ module decode(input clk, input clk_en,
   wire decode_is_atomic = atomic_inflight;
   wire decode_is_fetch_add_atomic = atomic_inflight && atomic_fetch_add_mode;
   wire [1:0]decode_atomic_step = atomic_inflight ? atomic_step_decode : 2'd0;
+  // Predecode execute-hot control bits here so execute receives registered
+  // booleans instead of repeatedly re-decoding `opcode_out`.
+  wire decode_exec_is_mem_w = (5'd3 <= decode_opcode) && (decode_opcode <= 5'd5);
+  wire decode_exec_is_mem_d = (5'd6 <= decode_opcode) && (decode_opcode <= 5'd8);
+  wire decode_exec_is_mem_b = (5'd9 <= decode_opcode) && (decode_opcode <= 5'd11);
+  wire decode_exec_mem_addr_abs =
+    (decode_opcode == 5'd3) || (decode_opcode == 5'd6) || (decode_opcode == 5'd9);
+  wire decode_exec_mem_addr_rel =
+    (decode_opcode == 5'd4) || (decode_opcode == 5'd7) || (decode_opcode == 5'd10);
+  wire decode_exec_mem_addr_rel_imm =
+    (decode_opcode == 5'd5) || (decode_opcode == 5'd8) || (decode_opcode == 5'd11);
+  wire decode_exec_subi_lhs_imm =
+    (decode_opcode == 5'd1) && (decode_alu_op == 5'd16);
+  wire decode_exec_rhs_uses_imm =
+    ((decode_opcode == 5'd1) && (decode_alu_op != 5'd16)) ||
+    (decode_opcode == 5'd2) ||
+    ((5'd3 <= decode_opcode) && (decode_opcode <= 5'd11)) ||
+    (decode_opcode == 5'd22);
   wire decode_is_absolute_mem =
     !atomic_inflight &&
     (decode_opcode == 5'd3 || decode_opcode == 5'd6 || decode_opcode == 5'd9);
+  wire decode_exec_is_crmov =
+    (decode_opcode == 5'd31) && (priv_type == 5'd1);
   // Only a subset of privileged instructions writes a GPR:
   // crmv with mode 1/3 (rA <- crB / rA <- rB) and tlbr.
   wire decode_priv_writes_gpr =
-    (decode_opcode == 5'd31) && (priv_type == 5'd1) &&
+    decode_exec_is_crmov &&
     ((crmov_mode_type == 2'd1) || (crmov_mode_type == 2'd3));
-  wire decode_tlbr_writes_gpr =
+  wire decode_exec_is_tlbr =
     (decode_opcode == 5'd31) && (priv_type == 5'd0) && (crmov_mode_type == 2'd0);
+  wire decode_tlbr_writes_gpr = decode_exec_is_tlbr;
   // `tgt_out_1` names either a GPR destination or a CR destination (for crmv).
   // Keep it zero only for instructions with no architectural destination so
   // execute forwarding cannot match bogus producers (for example after `bz`).
@@ -406,6 +432,16 @@ module decode(input clk, input clk_en,
     is_branch_out = 1'b0;
     is_post_inc_out = 1'b0;
     tgts_cr_out = 1'b0;
+    exec_rhs_uses_imm_out = 1'b0;
+    exec_subi_lhs_imm_out = 1'b0;
+    exec_is_crmov_out = 1'b0;
+    exec_is_mem_w_out = 1'b0;
+    exec_is_mem_d_out = 1'b0;
+    exec_is_mem_b_out = 1'b0;
+    exec_mem_addr_abs_out = 1'b0;
+    exec_mem_addr_rel_out = 1'b0;
+    exec_mem_addr_rel_imm_out = 1'b0;
+    exec_is_tlbr_out = 1'b0;
     priv_type_out = 5'd0;
     crmov_mode_type_out = 2'd0;
     bubble_out = 1'b1;
@@ -538,6 +574,16 @@ module decode(input clk, input clk_en,
           crmov_mode_type_out <= decode_slot_kill ? 2'd0 : crmov_mode_type;
           priv_type_out <= decode_slot_kill ? 5'd0 : priv_type;
           tgts_cr_out <= decode_slot_kill ? 1'b0 : tgts_cr;
+          exec_rhs_uses_imm_out <= decode_slot_kill ? 1'b0 : decode_exec_rhs_uses_imm;
+          exec_subi_lhs_imm_out <= decode_slot_kill ? 1'b0 : decode_exec_subi_lhs_imm;
+          exec_is_crmov_out <= decode_slot_kill ? 1'b0 : decode_exec_is_crmov;
+          exec_is_mem_w_out <= decode_slot_kill ? 1'b0 : decode_exec_is_mem_w;
+          exec_is_mem_d_out <= decode_slot_kill ? 1'b0 : decode_exec_is_mem_d;
+          exec_is_mem_b_out <= decode_slot_kill ? 1'b0 : decode_exec_is_mem_b;
+          exec_mem_addr_abs_out <= decode_slot_kill ? 1'b0 : decode_exec_mem_addr_abs;
+          exec_mem_addr_rel_out <= decode_slot_kill ? 1'b0 : decode_exec_mem_addr_rel;
+          exec_mem_addr_rel_imm_out <= decode_slot_kill ? 1'b0 : decode_exec_mem_addr_rel_imm;
+          exec_is_tlbr_out <= decode_slot_kill ? 1'b0 : decode_exec_is_tlbr;
 
           tlb_we <= (!decode_slot_kill) &&
             (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd1);

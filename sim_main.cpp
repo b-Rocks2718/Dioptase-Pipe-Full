@@ -9,6 +9,7 @@
 #include <iostream>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <cstdio>
 #include <optional>
 #include <sstream>
@@ -676,6 +677,10 @@ public:
         image_path_ = path;
     }
 
+    void set_debug(bool enabled) {
+        debug_ = enabled;
+    }
+
     void reset(Vdioptase &top) {
         prev_clk_ = false;
         prev_cs_ = true;
@@ -832,6 +837,16 @@ private:
         const uint8_t cmd = cmd_buffer_[0] & 0x3F;
         const uint32_t arg = argument();
 
+        if (debug_) {
+            std::cerr << "[sd" << (use_secondary_ ? 1 : 0) << "_card] CMD"
+                      << static_cast<unsigned>(cmd)
+                      << " arg=0x" << std::hex << std::setw(8) << std::setfill('0') << arg
+                      << " idle=" << std::dec << static_cast<unsigned>(idle_)
+                      << " init=" << static_cast<unsigned>(initialized_)
+                      << " app=" << static_cast<unsigned>(awaiting_app_cmd_)
+                      << std::setfill(' ') << std::endl;
+        }
+
         if (cmd != 55 && cmd != 41) {
             awaiting_app_cmd_ = false;
         }
@@ -957,6 +972,10 @@ private:
             ++crc_bytes_received_;
             if (crc_bytes_received_ >= 2) {
                 storage_[pending_block_] = write_buffer_;
+                if (debug_) {
+                    std::cerr << "[sd" << (use_secondary_ ? 1 : 0) << "_card] WRITE block="
+                              << pending_block_ << " committed" << std::endl;
+                }
                 enqueue_byte(0x05);
                 enqueue_byte(0xFF);
                 mode_ = Mode::Command;
@@ -986,6 +1005,7 @@ private:
     bool high_capacity_ = false;
     std::unordered_map<uint32_t, std::array<uint8_t, 512>> storage_;
     bool use_secondary_ = false;
+    bool debug_ = false;
     std::string image_path_;
 };
 
@@ -1000,9 +1020,13 @@ public:
           vblank_debug_(std::getenv("VBLANK_DEBUG") != nullptr),
           uart_debug_(std::getenv("UART_DEBUG") != nullptr),
           ps2_debug_(std::getenv("PS2_DEBUG") != nullptr),
-          cdiv_debug_(std::getenv("CDIV_DEBUG") != nullptr) {
+          cdiv_debug_(std::getenv("CDIV_DEBUG") != nullptr),
+          tlb_data_debug_(std::getenv("TLB_DATA_DEBUG") != nullptr),
+          sd_debug_(std::getenv("SD_DEBUG") != nullptr) {
         sd0_card_.set_image_path(sd0_image_path);
         sd1_card_.set_image_path(sd1_image_path);
+        sd0_card_.set_debug(sd_debug_);
+        sd1_card_.set_debug(sd_debug_);
         const char *boot = std::getenv("UART_BOOT");
         if (boot != nullptr) {
             while (*boot != '\0') {
@@ -1216,6 +1240,112 @@ public:
                           << std::dec << std::setfill(' ') << std::endl;
             }
         }
+        if (tlb_data_debug_) {
+            const uint8_t exc_tlb1 = static_cast<uint8_t>(top.rootp->dioptase__DOT__cpu__DOT__exc_tlb_1);
+            const uint8_t tlb_mem_exc = static_cast<uint8_t>(top.rootp->dioptase__DOT__cpu__DOT__tlb_mem_exc_out);
+            const uint8_t mem_a_exc = static_cast<uint8_t>(top.rootp->dioptase__DOT__cpu__DOT__mem_a_exc_out);
+            const uint8_t mem_b_exc = static_cast<uint8_t>(top.rootp->dioptase__DOT__cpu__DOT__mem_b_exc_out);
+            const bool exc_wb = top.rootp->dioptase__DOT__cpu__DOT__exc_in_wb;
+            const bool mem_re = top.rootp->dioptase__DOT__mem_read_en;
+            const bool ren_buf = top.rootp->dioptase__DOT__mem__DOT__ren_buf;
+            const uint32_t dpc = top.rootp->dioptase__DOT__cpu__DOT__decode_pc_out;
+            const uint32_t epc = top.rootp->dioptase__DOT__cpu__DOT__exec_pc_out;
+            const uint32_t mpc = top.rootp->dioptase__DOT__cpu__DOT__mem_b_pc_out;
+            const uint32_t mem1 = top.rootp->dioptase__DOT__mem_read1_data;
+            const uint32_t ivt_addr = static_cast<uint32_t>(top.rootp->dioptase__DOT__cpu__DOT__tlb_out_1);
+            const uint32_t raddr1_buf = static_cast<uint32_t>(top.rootp->dioptase__DOT__mem__DOT__raddr1_buf);
+            const uint32_t ram_q1 = top.rootp->dioptase__DOT__mem__DOT__ram_data1_out;
+            if (exc_tlb1 != 0 || tlb_mem_exc != 0 || mem_a_exc != 0 || mem_b_exc != 0 || exc_wb) {
+                std::cerr << "[tlb_data] cyc=" << total_cycles_
+                          << " exc_tlb1=0x" << std::hex << std::setw(2) << std::setfill('0')
+                          << static_cast<unsigned>(exc_tlb1)
+                          << " tlb_mem=0x" << std::setw(2) << static_cast<unsigned>(tlb_mem_exc)
+                          << " mem_a=0x" << std::setw(2) << static_cast<unsigned>(mem_a_exc)
+                          << " mem_b=0x" << std::setw(2) << static_cast<unsigned>(mem_b_exc)
+                          << " wb=" << std::dec << exc_wb
+                          << " mem_re=" << mem_re
+                          << " ren_buf=" << ren_buf
+                          << " dpc=0x" << std::hex << std::setw(8) << dpc
+                          << " epc=0x" << std::setw(8) << epc
+                          << " mpc=0x" << std::setw(8) << mpc
+                          << " ivt_addr=0x" << std::setw(8) << ivt_addr
+                          << " raddr1_buf=0x" << std::setw(8) << raddr1_buf
+                          << " ram_q1=0x" << std::setw(8) << ram_q1
+                          << " mem1=0x" << std::setw(8) << mem1
+                          << std::dec << std::setfill(' ') << std::endl;
+            }
+        }
+        if (sd_debug_) {
+            const uint32_t sd0_status = top.rootp->dioptase__DOT__mem__DOT__sd0_dma_status;
+            const uint32_t sd1_status = top.rootp->dioptase__DOT__mem__DOT__sd1_dma_status;
+            const uint8_t sd0_init = static_cast<uint8_t>(top.rootp->dioptase__DOT__mem__DOT__sd0_init_state);
+            const uint8_t sd1_init = static_cast<uint8_t>(top.rootp->dioptase__DOT__mem__DOT__sd1_init_state);
+            const bool sd0_launch = top.rootp->dioptase__DOT__mem__DOT__sd0_spi_launch_sent;
+            const bool sd1_launch = top.rootp->dioptase__DOT__mem__DOT__sd1_spi_launch_sent;
+            const bool sd0_busy = top.rootp->dioptase__DOT__mem__DOT__sd0_busy;
+            const bool sd1_busy = top.rootp->dioptase__DOT__mem__DOT__sd1_busy;
+            const bool sd0_irq = top.rootp->dioptase__DOT__mem__DOT__sd0_interrupt;
+            const bool sd1_irq = top.rootp->dioptase__DOT__mem__DOT__sd1_interrupt;
+            const bool sd0_cmd_valid = top.rootp->dioptase__DOT__mem__DOT__sd0_cmd_buffer_out_valid;
+            const bool sd1_cmd_valid = top.rootp->dioptase__DOT__mem__DOT__sd1_cmd_buffer_out_valid;
+            const bool sd0_data_valid = top.rootp->dioptase__DOT__mem__DOT__sd0_data_buffer_out_valid;
+            const bool sd1_data_valid = top.rootp->dioptase__DOT__mem__DOT__sd1_data_buffer_out_valid;
+            const uint64_t sd0_cmd = top.rootp->dioptase__DOT__mem__DOT__sd0_cmd_buffer_out;
+            const uint64_t sd1_cmd = top.rootp->dioptase__DOT__mem__DOT__sd1_cmd_buffer_out;
+
+            if (sd0_status != prev_sd0_status_ ||
+                sd1_status != prev_sd1_status_ ||
+                sd0_init != prev_sd0_init_ ||
+                sd1_init != prev_sd1_init_ ||
+                sd0_launch != prev_sd0_launch_ ||
+                sd1_launch != prev_sd1_launch_ ||
+                sd0_busy != prev_sd0_busy_ ||
+                sd1_busy != prev_sd1_busy_ ||
+                sd0_irq != prev_sd0_irq_ ||
+                sd1_irq != prev_sd1_irq_ ||
+                sd0_cmd_valid != prev_sd0_cmd_valid_ ||
+                sd1_cmd_valid != prev_sd1_cmd_valid_ ||
+                sd0_data_valid != prev_sd0_data_valid_ ||
+                sd1_data_valid != prev_sd1_data_valid_ ||
+                sd0_cmd != prev_sd0_cmd_ ||
+                sd1_cmd != prev_sd1_cmd_) {
+                std::cerr << "[sd] cyc=" << total_cycles_
+                          << " s0_status=0x" << std::hex << std::setw(8) << std::setfill('0') << sd0_status
+                          << " s0_init=" << std::setw(1) << static_cast<unsigned>(sd0_init)
+                          << " s0_launch=" << std::dec << static_cast<unsigned>(sd0_launch)
+                          << " s0_busy=" << static_cast<unsigned>(sd0_busy)
+                          << " s0_irq=" << static_cast<unsigned>(sd0_irq)
+                          << " s0_cmdv=" << static_cast<unsigned>(sd0_cmd_valid)
+                          << " s0_datav=" << static_cast<unsigned>(sd0_data_valid)
+                          << " s0_cmd=0x" << std::hex << std::setw(12) << sd0_cmd
+                          << " s1_status=0x" << std::setw(8) << sd1_status
+                          << " s1_init=" << std::setw(1) << static_cast<unsigned>(sd1_init)
+                          << " s1_launch=" << std::dec << static_cast<unsigned>(sd1_launch)
+                          << " s1_busy=" << static_cast<unsigned>(sd1_busy)
+                          << " s1_irq=" << static_cast<unsigned>(sd1_irq)
+                          << " s1_cmdv=" << static_cast<unsigned>(sd1_cmd_valid)
+                          << " s1_datav=" << static_cast<unsigned>(sd1_data_valid)
+                          << " s1_cmd=0x" << std::hex << std::setw(12) << sd1_cmd
+                          << std::dec << std::setfill(' ') << std::endl;
+            }
+
+            prev_sd0_status_ = sd0_status;
+            prev_sd1_status_ = sd1_status;
+            prev_sd0_init_ = sd0_init;
+            prev_sd1_init_ = sd1_init;
+            prev_sd0_launch_ = sd0_launch;
+            prev_sd1_launch_ = sd1_launch;
+            prev_sd0_busy_ = sd0_busy;
+            prev_sd1_busy_ = sd1_busy;
+            prev_sd0_irq_ = sd0_irq;
+            prev_sd1_irq_ = sd1_irq;
+            prev_sd0_cmd_valid_ = sd0_cmd_valid;
+            prev_sd1_cmd_valid_ = sd1_cmd_valid;
+            prev_sd0_data_valid_ = sd0_data_valid;
+            prev_sd1_data_valid_ = sd1_data_valid;
+            prev_sd0_cmd_ = sd0_cmd;
+            prev_sd1_cmd_ = sd1_cmd;
+        }
         ++total_cycles_;
         ps2_.tick(top);
     }
@@ -1244,10 +1374,28 @@ private:
     bool uart_debug_ = false;
     bool ps2_debug_ = false;
     bool cdiv_debug_ = false;
+    bool tlb_data_debug_ = false;
+    bool sd_debug_ = false;
     uint8_t prev_rx_count_ = 0;
     uint8_t prev_tx_count_ = 0;
     uint32_t prev_r5_ = 0;
     uint16_t prev_ps2_value_ = 0;
+    uint32_t prev_sd0_status_ = std::numeric_limits<uint32_t>::max();
+    uint32_t prev_sd1_status_ = std::numeric_limits<uint32_t>::max();
+    uint8_t prev_sd0_init_ = 0xFF;
+    uint8_t prev_sd1_init_ = 0xFF;
+    bool prev_sd0_launch_ = false;
+    bool prev_sd1_launch_ = false;
+    bool prev_sd0_busy_ = false;
+    bool prev_sd1_busy_ = false;
+    bool prev_sd0_irq_ = false;
+    bool prev_sd1_irq_ = false;
+    bool prev_sd0_cmd_valid_ = false;
+    bool prev_sd1_cmd_valid_ = false;
+    bool prev_sd0_data_valid_ = false;
+    bool prev_sd1_data_valid_ = false;
+    uint64_t prev_sd0_cmd_ = std::numeric_limits<uint64_t>::max();
+    uint64_t prev_sd1_cmd_ = std::numeric_limits<uint64_t>::max();
 };
 
 Options parse_options(int argc, char **argv, std::vector<std::string> &verilator_args) {

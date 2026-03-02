@@ -42,6 +42,11 @@ module execute(input clk, input clk_en, input halt,
     input mem_a_bubble, input mem_a_load, 
     input mem_b_bubble, input mem_b_load,
     input is_post_inc, input tgts_cr,
+    input exec_rhs_uses_imm, input exec_subi_lhs_imm,
+    input exec_is_crmov,
+    input exec_is_mem_w, input exec_is_mem_d, input exec_is_mem_b,
+    input exec_mem_addr_abs, input exec_mem_addr_rel, input exec_mem_addr_rel_imm,
+    input decode_is_tlbr,
     input [4:0]priv_type, input [1:0]crmov_mode_type,
     input [7:0]exc_in, input exc_in_wb, input [31:0]flags_restore, input rfe_in_wb,
     input kmode,
@@ -62,7 +67,8 @@ module execute(input clk, input clk_en, input halt,
     output reg tgts_cr_out, output reg [4:0]priv_type_out, output reg [1:0]crmov_mode_type_out,
     output reg [7:0]exc_out, output reg [31:0]pc_out,
     output [31:0]op1, output [31:0]op2,
-    output reg [31:0]op1_out, output reg [31:0]op2_out
+    output reg [31:0]op1_out, output reg [31:0]op2_out,
+    output reg no_alias_out_1
   );
 
   initial begin
@@ -99,6 +105,7 @@ module execute(input clk, input clk_en, input halt,
     pc_out = 32'd0;
     op1_out = 32'd0;
     op2_out = 32'd0;
+    no_alias_out_1 = 1'b0;
     replay_dedup_active = 1'b0;
     stall_prev = 1'b0;
     last_decode_sig = {REPLAY_SIG_W{1'b0}};
@@ -134,18 +141,25 @@ module execute(input clk, input clk_en, input halt,
   // regfile reads for a new slot that happens to reuse the same source reg.
   wire stall_buf_valid = stall;
 
-  wire is_mem_w = (5'd3 <= opcode && opcode <= 5'd5);
-  wire is_mem_d = (5'd6 <= opcode && opcode <= 5'd8);
-  wire is_mem_b = (5'd9 <= opcode && opcode <= 5'd11);
+  // Decode registers these hot control bits so execute does not fan `opcode`
+  // out into another round of wide compares before forming memory requests.
+  wire is_mem_w = exec_is_mem_w;
+  wire is_mem_d = exec_is_mem_d;
+  wire is_mem_b = exec_is_mem_b;
+  wire rhs_uses_imm = exec_rhs_uses_imm;
+  wire lhs_uses_imm = exec_subi_lhs_imm;
+  wire mem_addr_abs = exec_mem_addr_abs;
+  wire mem_addr_rel = exec_mem_addr_rel;
+  wire mem_addr_rel_imm = exec_mem_addr_rel_imm;
+  wire is_tlbr = decode_is_tlbr;
   wire s1_nonzero = (s_1 != 5'd0);
   wire s2_nonzero = (s_2 != 5'd0);
-  wire is_crmov = (opcode == 5'd31) && (priv_type == 5'd1);
+  wire is_crmov = exec_is_crmov;
   wire source_no_alias_s1 = kmode && is_crmov && (s_1 == 5'd31);
   wire source_no_alias_s2 = kmode && is_crmov && (s_2 == 5'd31);
-  wire ex1_no_alias = kmode && !tgts_cr_out &&
-    (opcode_out == 5'd31) && (priv_type_out == 5'd1) &&
-    ((crmov_mode_type_out == 2'd1) || (crmov_mode_type_out == 2'd3)) &&
-    (tgt_out_1 == 5'd31);
+  // Carry a predecoded alias-class tag with the backend slot so this stage
+  // does not have to re-decode older opcode metadata on the forwarding path.
+  wire ex1_no_alias = no_alias_out_1;
   wire ex1_gpr_valid = !tgts_cr_out;
   wire tlbm1_gpr_valid = !tlb_mem_tgts_cr;
   wire mema1_gpr_valid = !mem_a_tgts_cr;
@@ -158,80 +172,55 @@ module execute(input clk, input clk_en, input halt,
   // stall-capture buffers, then regfile output.
   wire ex1_hit_s1 = s1_nonzero && ex1_gpr_valid && (tgt_out_1 == s_1) &&
     ((s_1 != 5'd31) || (source_no_alias_s1 == ex1_no_alias));
-  wire ex2_hit_s1 = s1_nonzero && (tgt_out_2 == s_1);
+  // `tgt_out_2` is only produced by absolute-memory pre/post-increment address
+  // updates. That path is rare enough that we prefer to stall on these
+  // dependencies instead of forwarding them through the full ALU/address cone.
   wire tlbm1_hit_s1 = s1_nonzero && tlbm1_gpr_valid && (tlb_mem_tgt_1 == s_1) &&
     ((s_1 != 5'd31) || (source_no_alias_s1 == tlb_mem_no_alias_1));
-  wire tlbm2_hit_s1 = s1_nonzero && (tlb_mem_tgt_2 == s_1);
   wire mema1_hit_s1 = s1_nonzero && mema1_gpr_valid && (mem_a_tgt_1 == s_1) &&
     ((s_1 != 5'd31) || (source_no_alias_s1 == mem_a_no_alias_1));
-  wire mema2_hit_s1 = s1_nonzero && (mem_a_tgt_2 == s_1);
   wire memb1_hit_s1 = s1_nonzero && memb1_gpr_valid && (mem_b_tgt_1 == s_1) &&
     ((s_1 != 5'd31) || (source_no_alias_s1 == mem_b_no_alias_1));
-  wire memb2_hit_s1 = s1_nonzero && (mem_b_tgt_2 == s_1);
   wire wb1_hit_s1 = s1_nonzero && wb1_gpr_valid && (wb_tgt_1 == s_1) &&
     ((s_1 != 5'd31) || (source_no_alias_s1 == wb_no_alias_1));
-  wire wb2_hit_s1 = s1_nonzero && (wb_tgt_2 == s_1);
   wire buf_a1_hit_s1 = stall_buf_valid && s1_nonzero && buf_a1_gpr_valid && (reg_tgt_buf_a_1 == s_1) &&
     ((s_1 != 5'd31) || (source_no_alias_s1 == no_alias_buf_a_1));
-  wire buf_a2_hit_s1 = stall_buf_valid && s1_nonzero && (reg_tgt_buf_a_2 == s_1);
   wire buf_b1_hit_s1 = stall_buf_valid && s1_nonzero && buf_b1_gpr_valid && (reg_tgt_buf_b_1 == s_1) &&
     ((s_1 != 5'd31) || (source_no_alias_s1 == no_alias_buf_b_1));
-  wire buf_b2_hit_s1 = stall_buf_valid && s1_nonzero && (reg_tgt_buf_b_2 == s_1);
 
   wire ex1_hit_s2 = s2_nonzero && ex1_gpr_valid && (tgt_out_1 == s_2) &&
     ((s_2 != 5'd31) || (source_no_alias_s2 == ex1_no_alias));
-  wire ex2_hit_s2 = s2_nonzero && (tgt_out_2 == s_2);
   wire tlbm1_hit_s2 = s2_nonzero && tlbm1_gpr_valid && (tlb_mem_tgt_1 == s_2) &&
     ((s_2 != 5'd31) || (source_no_alias_s2 == tlb_mem_no_alias_1));
-  wire tlbm2_hit_s2 = s2_nonzero && (tlb_mem_tgt_2 == s_2);
   wire mema1_hit_s2 = s2_nonzero && mema1_gpr_valid && (mem_a_tgt_1 == s_2) &&
     ((s_2 != 5'd31) || (source_no_alias_s2 == mem_a_no_alias_1));
-  wire mema2_hit_s2 = s2_nonzero && (mem_a_tgt_2 == s_2);
   wire memb1_hit_s2 = s2_nonzero && memb1_gpr_valid && (mem_b_tgt_1 == s_2) &&
     ((s_2 != 5'd31) || (source_no_alias_s2 == mem_b_no_alias_1));
-  wire memb2_hit_s2 = s2_nonzero && (mem_b_tgt_2 == s_2);
   wire wb1_hit_s2 = s2_nonzero && wb1_gpr_valid && (wb_tgt_1 == s_2) &&
     ((s_2 != 5'd31) || (source_no_alias_s2 == wb_no_alias_1));
-  wire wb2_hit_s2 = s2_nonzero && (wb_tgt_2 == s_2);
   wire buf_a1_hit_s2 = stall_buf_valid && s2_nonzero && buf_a1_gpr_valid && (reg_tgt_buf_a_1 == s_2) &&
     ((s_2 != 5'd31) || (source_no_alias_s2 == no_alias_buf_a_1));
-  wire buf_a2_hit_s2 = stall_buf_valid && s2_nonzero && (reg_tgt_buf_a_2 == s_2);
   wire buf_b1_hit_s2 = stall_buf_valid && s2_nonzero && buf_b1_gpr_valid && (reg_tgt_buf_b_1 == s_2) &&
     ((s_2 != 5'd31) || (source_no_alias_s2 == no_alias_buf_b_1));
-  wire buf_b2_hit_s2 = stall_buf_valid && s2_nonzero && (reg_tgt_buf_b_2 == s_2);
 
   assign op1 = 
     ex1_hit_s1 ? result_1 :
-    ex2_hit_s1 ? result_2 :
     tlbm1_hit_s1 ? tlb_mem_result_out_1 :
-    tlbm2_hit_s1 ? tlb_mem_result_out_2 :
     mema1_hit_s1 ? mem_a_result_out_1 : 
-    mema2_hit_s1 ? mem_a_result_out_2 : 
     memb1_hit_s1 ? mem_b_result_out_1 :
-    memb2_hit_s1 ? mem_b_result_out_2 :
     wb1_hit_s1 ? wb_result_out_1 :
-    wb2_hit_s1 ? wb_result_out_2 :
     buf_a1_hit_s1 ? reg_data_buf_a_1 :
-    buf_a2_hit_s1 ? reg_data_buf_a_2 :
     buf_b1_hit_s1 ? reg_data_buf_b_1 :
-    buf_b2_hit_s1 ? reg_data_buf_b_2 :
     reg_out_1;
 
   assign op2 = 
     ex1_hit_s2 ? result_1 :
-    ex2_hit_s2 ? result_2 :
     tlbm1_hit_s2 ? tlb_mem_result_out_1 :
-    tlbm2_hit_s2 ? tlb_mem_result_out_2 :
     mema1_hit_s2 ? mem_a_result_out_1 : 
-    mema2_hit_s2 ? mem_a_result_out_2 : 
     memb1_hit_s2 ? mem_b_result_out_1 :
-    memb2_hit_s2 ? mem_b_result_out_2 :
     wb1_hit_s2 ? wb_result_out_1 :
-    wb2_hit_s2 ? wb_result_out_2 :
     buf_a1_hit_s2 ? reg_data_buf_a_1 :
-    buf_a2_hit_s2 ? reg_data_buf_a_2 :
     buf_b1_hit_s2 ? reg_data_buf_b_1 :
-    buf_b2_hit_s2 ? reg_data_buf_b_2 :
     reg_out_2;
 
   // Atomic cracked micro-ops use a snapshot of forwarded operands from the
@@ -279,14 +268,24 @@ module execute(input clk, input clk_en, input halt,
     ((mem_b_tgt_1 == dep_s1) || (mem_b_tgt_1 == dep_s2));
   wire memb2_dep_hit = (mem_b_tgt_2 != 5'd0) &&
     ((mem_b_tgt_2 == dep_s1) || (mem_b_tgt_2 == dep_s2));
+  wire wb2_dep_hit = (wb_tgt_2 != 5'd0) &&
+    ((wb_tgt_2 == dep_s1) || (wb_tgt_2 == dep_s2));
   wire ex_dep_hit = ex1_dep_hit || ex2_dep_hit;
   wire tlb_mem_dep_hit = tlbm1_dep_hit || tlbm2_dep_hit;
   wire mem_a_dep_hit = mema1_dep_hit || mema2_dep_hit;
   wire mem_b_dep_hit = memb1_dep_hit || memb2_dep_hit;
-
+  // Stage-2 (post-increment) producers are now stall-only. This removes their
+  // long bypass-select path from the execute ALU/address critical cone.
+  wire tgt2_dep_stall =
+    (ex2_dep_hit && !bubble_out) ||
+    (tlbm2_dep_hit && !tlb_mem_bubble) ||
+    (mema2_dep_hit && !mem_a_bubble) ||
+    (memb2_dep_hit && !mem_b_bubble) ||
+    wb2_dep_hit;
   // Load-use stall checks apply only to true GPR dependencies.
   // CR dependencies are handled by dedicated control-register forwarding.
   assign stall = decode_live && (
+    tgt2_dep_stall ||
     // Dependencies on a load or tlbr must stall until a forwardable value exists.
     // With the dedicated tlb_memory stage, load data is not available until writeback.
     (ex_dep_hit && (is_load_out || is_tlbr_out) && !bubble_out) ||
@@ -341,15 +340,17 @@ module execute(input clk, input clk_en, input halt,
 
   // ISA subtract-immediate uses immediate as lhs and register as rhs.
   // This mux keeps ALU op encoding unchanged while honoring that semantic.
-  wire [31:0]lhs = (opcode == 5'd1 && alu_op == 5'd16) ? imm : atomic_op1;
-  wire [31:0]rhs = ((opcode == 5'd1 && alu_op != 5'd16) || (opcode == 5'd2) || 
-                  (5'd3 <= opcode && opcode <= 5'd11) || (opcode == 5'd22)) ? 
-                    imm : (opcode == 5'd1 && alu_op == 5'd16) ? atomic_op1 : atomic_op2;
+  wire [31:0]lhs = lhs_uses_imm ? imm : atomic_op1;
+  wire [31:0]rhs = rhs_uses_imm ? imm : (lhs_uses_imm ? atomic_op1 : atomic_op2);
 
   wire we_bit = is_store && !bubble_in && !exc_slot && !exc_in_wb
                 && !rfe_in_wb && !stall && !exec_dup;
   wire crmv_writes_cr = is_crmov &&
     ((crmov_mode_type == 2'd0) || (crmov_mode_type == 2'd2));
+  // Only kernel-mode crmov GPR writes to r31 are "no alias" producers.
+  wire slot_no_alias_1 = kmode && !tgts_cr && is_crmov &&
+    ((crmov_mode_type == 2'd1) || (crmov_mode_type == 2'd3)) &&
+    (tgt_1 == 5'd31);
   // cr9 (CID) is read-only; suppress architectural control-register writeback.
   wire cr_write_allowed = !((tgt_1 == 5'd9) && crmv_writes_cr);
   wire [31:0]crmv_write_data = crmov_reads_creg ? cr_op : op1;
@@ -374,9 +375,9 @@ module execute(input clk, input clk_en, input halt,
   // Keep this as a wire so byte/halfword lane selection uses the current
   // instruction address (not the registered `addr` from a previous cycle).
   wire [31:0]mem_addr =
-    (opcode == 5'd3 || opcode == 5'd6 || opcode == 5'd9) ? (is_post_inc ? atomic_op1 : alu_rslt) : // absolute mem
-    (opcode == 5'd4 || opcode == 5'd7 || opcode == 5'd10) ? alu_rslt + decode_pc_out + 32'h4 : // relative mem
-    (opcode == 5'd5 || opcode == 5'd8 || opcode == 5'd11) ? alu_rslt + decode_pc_out + 32'h4 : // relative immediate mem
+    mem_addr_abs ? (is_post_inc ? atomic_op1 : alu_rslt) :
+    mem_addr_rel ? (alu_rslt + decode_pc_out + 32'h4) :
+    mem_addr_rel_imm ? (alu_rslt + decode_pc_out + 32'h4) :
     32'h0;
 
   // Byte/halfword stores must target the addressed lane(s) within the word.
@@ -431,6 +432,7 @@ always @(posedge clk) begin
       pc_out <= decode_pc_out;
       op1_out <= 32'd0;
       op2_out <= 32'd0;
+      no_alias_out_1 <= 1'b0;
 
       flags_out <= 4'd0;
 
@@ -474,69 +476,6 @@ always @(posedge clk) begin
       store_data <= slot_kill ? 32'd0 : store_data_next;
       we <= slot_kill ? 4'd0 : we_next;
 
-      if ($test$plusargs("heap_watch") && !slot_kill &&
-          (((we_next != 4'd0) &&
-            (mem_addr == 32'h00200000 || mem_addr == 32'h00200004 ||
-             mem_addr == 32'h00200008 || mem_addr == 32'h0020000C ||
-             mem_addr == 32'h00200010 || mem_addr == 32'h00200014)) ||
-           (decode_pc_out == 32'h0001454C || decode_pc_out == 32'h00014550 ||
-            decode_pc_out == 32'h00014554 || decode_pc_out == 32'h00014558))) begin
-        $display("[heap_watch][exec] pc=%h op=%0d s1=r%0d s2=r%0d reg1=%h reg2=%h op1=%h op2=%h mem_addr=%h store=%h we=%b",
-                 decode_pc_out, opcode, s_1, s_2, reg_out_1, reg_out_2, op1, op2, mem_addr, store_data_next, we_next);
-        $display("[heap_watch][exec] s2 hits ex1=%b ex2=%b tlbm1=%b tlbm2=%b mema1=%b mema2=%b memb1=%b memb2=%b wb1=%b wb2=%b ba1=%b ba2=%b bb1=%b bb2=%b",
-                 ex1_hit_s2, ex2_hit_s2, tlbm1_hit_s2, tlbm2_hit_s2, mema1_hit_s2, mema2_hit_s2,
-                 memb1_hit_s2, memb2_hit_s2, wb1_hit_s2, wb2_hit_s2, buf_a1_hit_s2, buf_a2_hit_s2,
-                 buf_b1_hit_s2, buf_b2_hit_s2);
-        $display("[heap_watch][exec] tgts ex=(%0d,%0d) tlbm=(%0d,%0d,b=%b,ld=%b) mema=(%0d,%0d,b=%b,ld=%b) memb=(%0d,%0d,b=%b,ld=%b) wb=(%0d,%0d,b=%b,ld=%b)",
-                 tgt_out_1, tgt_out_2,
-                 tlb_mem_tgt_1, tlb_mem_tgt_2, tlb_mem_bubble, tlb_mem_is_load,
-                 mem_a_tgt_1, mem_a_tgt_2, mem_a_bubble, mem_a_load,
-                 mem_b_tgt_1, mem_b_tgt_2, mem_b_bubble, mem_b_load,
-                 wb_tgt_1, wb_tgt_2, wb_tgts_cr, wb_load);
-      end
-      if ($test$plusargs("ctx_watch") &&
-          (((decode_pc_out >= 32'h000235A0) && (decode_pc_out <= 32'h00023680)) ||
-           ((decode_pc_out >= 32'h00021400) && (decode_pc_out <= 32'h00021580)) ||
-           ((decode_pc_out >= 32'h000215C0) && (decode_pc_out <= 32'h00021610)) ||
-           ((decode_pc_out >= 32'h00023510) && (decode_pc_out <= 32'h00023570)) ||
-           ((decode_pc_out >= 32'h00016540) && (decode_pc_out <= 32'h00016C20)) ||
-           ((decode_pc_out >= 32'h00011180) && (decode_pc_out <= 32'h000112A0)) ||
-           ((decode_pc_out >= 32'h00010780) && (decode_pc_out <= 32'h00010C20))) ) begin
-        $display("[ctx_watch][exec] pc=%h op=%0d s1=r%0d s2=r%0d reg1=%h reg2=%h op1=%h op2=%h mem_addr=%h store=%h we=%b stall=%b sk=%b br=%b taken=%b btgt=%h is_br=%b",
-                 decode_pc_out, opcode, s_1, s_2, reg_out_1, reg_out_2,
-                 op1, op2, mem_addr, store_data_next, we_next, stall, slot_kill,
-                 branch, taken, branch_tgt, is_branch);
-      end
-      if ($test$plusargs("evloop_watch") &&
-          (decode_pc_out >= 32'h000215E0) && (decode_pc_out <= 32'h00021840) &&
-          is_branch && !bubble_in) begin
-        $display("[evloop_watch][exec] pc=%h bcode=%0d taken=%b branch=%b flags=%b excwb=%b rfewb=%b stall=%b",
-                 decode_pc_out, branch_code, taken, branch, flags,
-                 exc_in_wb, rfe_in_wb, stall);
-      end
-      if ($test$plusargs("evloop_memwatch") &&
-          (decode_pc_out >= 32'h000215E0) && (decode_pc_out <= 32'h00021840) &&
-          !bubble_in && (is_load || is_store)) begin
-        $display("[evloop_memwatch][exec] pc=%h op=%0d ld=%b st=%b addr=%h we=%b wdata=%h op1=%h op2=%h",
-                 decode_pc_out, opcode, is_load, is_store, mem_addr, we_next,
-                 store_data_next, op1, op2);
-      end
-      if ($test$plusargs("evloop_cmp_watch") &&
-          (decode_pc_out >= 32'h000216D0) && (decode_pc_out <= 32'h000216E8) &&
-          !bubble_in) begin
-        $display("[evloop_cmp_watch][exec] pc=%h op=%0d alu=%0d s1=%0d s2=%0d op1=%h op2=%h lhs=%h rhs=%h flags=%b",
-                 decode_pc_out, opcode, alu_op, s_1, s_2, op1, op2, lhs, rhs, flags);
-      end
-      if ($test$plusargs("barrier_watch") &&
-          (((decode_pc_out >= 32'h00011190) && (decode_pc_out <= 32'h00011290)) ||
-           ((decode_pc_out >= 32'h00016A70) && (decode_pc_out <= 32'h00016AC0)) ||
-           ((decode_pc_out >= 32'h00023510) && (decode_pc_out <= 32'h00023530)) ||
-           ((decode_pc_out >= 32'h00023540) && (decode_pc_out <= 32'h00023570))) &&
-          !bubble_in) begin
-        $display("[barrier_watch][exec] pc=%h sid=%0d op=%0d sk=%b dup=%b st=%b exwb=%b rfewb=%b exc=%h at=%b fadd=%b astep=%0d ld=%b stw=%b maddr=%h we=%b wdata=%h",
-                 decode_pc_out, slot_id, opcode, slot_kill, exec_dup, stall, exc_in_wb, rfe_in_wb,
-                 exc_in, is_atomic, is_fetch_add_atomic, atomic_step, is_load, is_store, mem_addr, we_next, store_data_next);
-      end
       is_load_out <= slot_kill ? 1'b0 : is_load;
       is_store_out <= slot_kill ? 1'b0 : is_store;
       tgts_cr_out <= slot_kill ? 1'b0 : (tgts_cr && cr_write_allowed);
@@ -548,11 +487,11 @@ always @(posedge clk) begin
       pc_out <= decode_pc_out;
       op1_out <= slot_kill ? 32'd0 : op1;
       op2_out <= slot_kill ? 32'd0 : op2;
+      no_alias_out_1 <= slot_kill ? 1'b0 : slot_no_alias_1;
 
       flags_out <= slot_kill ? 4'd0 : flags;
 
-      is_tlbr_out <= !slot_kill &&
-        (opcode == 5'd31 && priv_type == 5'd0 && crmov_mode_type == 2'd0);
+      is_tlbr_out <= !slot_kill && is_tlbr;
 
       if (stall) begin
         reg_tgt_buf_a_1 <= wb_tgt_1;

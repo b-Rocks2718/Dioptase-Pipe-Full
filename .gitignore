@@ -7,4 +7,5 @@
 *.bit
 *.log
 debugging/
+reports/
 obj_dir/

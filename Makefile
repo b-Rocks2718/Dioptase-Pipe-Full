@@ -48,7 +48,7 @@ VERILATOR_LDFLAGS := $(strip $(GTKMM_LIBS) -lpthread)
 CPU_TESTS_SRCS   := $(wildcard $(CPU_TESTS_DIR)/*.s)
 # some emu tests run forever and use i/o
 EMU_TESTS_ALL      := $(wildcard $(EMU_TESTS_DIR)/*.s)
-SDCARD_TEST        := $(EMU_TESTS_DIR)/sdcard.s
+SDCARD_TEST        := $(EMU_TESTS_DIR)/sdcard.s $(EMU_TESTS_DIR)/sdcard1.s
 EMU_TESTS_EXCLUDE := $(EMU_TESTS_DIR)/cdiv.s $(EMU_TESTS_DIR)/colors.s \
 											$(EMU_TESTS_DIR)/green.s $(EMU_TESTS_DIR)/sprite.s \
 											$(EMU_TESTS_DIR)/uart.s $(EMU_TESTS_DIR)/sleep.s \
@@ -104,9 +104,14 @@ ifeq ($(GTKMM_FOUND),0)
 endif
 
 verilator: check-verilator-deps $(VERILATOR_SRCS)
-	verilator --cc --exe --build $(VERILATOR_SRCS) \
+	verilator --cc --exe --build $(VERILATOR_SRCS) +define+VERILATOR_TEST \
     -CFLAGS "$(VERILATOR_CFLAGS)" -LDFLAGS "$(VERILATOR_LDFLAGS)" \
     -o dioptase
+
+verilator-os: check-verilator-deps $(VERILATOR_SRCS)
+	verilator --cc --exe --build $(VERILATOR_SRCS) \
+    -CFLAGS "$(VERILATOR_CFLAGS)" -LDFLAGS "$(VERILATOR_LDFLAGS)" \
+    -o dioptase_os
 
 # Compile Verilog into sim.vvp once
 sim.vvp: $(SIM_SRCS)
@@ -143,15 +148,12 @@ test: $(ASM_SRCS) $(VERILOG_SRCS) $(EMULATOR) | dirs
 	YELLOW="\033[0;33m"; \
 	NC="\033[0m"; \
 	set -e; \
-	passed=0; total=$(TOTAL); \
+	passed=0; total=$(words $(filter-out $(SDCARD_TEST),$(ASM_SRCS))); \
 	$(IVERILOG) -DSIMULATION -o sim.vvp $(SIM_SRCS) ; \
-	echo "Running $(words $(EMU_TESTS_SRCS)) instruction tests:"; \
-	for t in $(basename $(notdir $(EMU_TESTS_SRCS))); do \
+	echo "Running $(words $(filter-out $(SDCARD_TEST),$(EMU_TESTS_SRCS))) instruction tests:"; \
+	for t in $(basename $(notdir $(filter-out $(SDCARD_TEST),$(EMU_TESTS_SRCS)))); do \
 	  printf "%s %-20s " '-' "$$t"; \
 	  limit=$(CYCLE_LIMIT); \
-	  if [ "$$t" = "sdcard" ] || [ "$$t" = "sdcard1" ]; then \
-	    limit=$(SD_CYCLE_LIMIT); \
-	  fi; \
 	  $(ASSEMBLER) $(EMU_TESTS_DIR)/$$t.s -o $(HEX_DIR)/$$t.hex -kernel && \
 	  $(EMULATOR) --max-cycles=$$limit $(HEX_DIR)/$$t.hex | sed '/^Warning:/d' > $(OUT_DIR)/$$t.emuout && \
 	  $(VVP) sim.vvp +hex=$(HEX_DIR)/$$t.hex +vcd=$(OUT_DIR)/$$t.vcd +cycle_limit=$$limit 2>/dev/null \
@@ -187,7 +189,7 @@ test-verilator: check-verilator-deps $(ASM_SRCS) $(VERILOG_SRCS) $(EMULATOR) | d
 	NC="\033[0m"; \
 	set -e; \
 	passed=0; total=$(TOTAL); \
-	verilator --cc --exe --build $(VERILATOR_SRCS) \
+	verilator --cc --exe --build $(VERILATOR_SRCS) +define+VERILATOR_TEST \
     -CFLAGS "$(VERILATOR_CFLAGS)" -LDFLAGS "$(VERILATOR_LDFLAGS)" \
     -o dioptase; \
 	echo "Running $(words $(EMU_TESTS_SRCS)) instruction tests:"; \
